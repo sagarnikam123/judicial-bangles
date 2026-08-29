@@ -1003,3 +1003,150 @@ FROM kiro_user_report
 WHERE account_label = '$account_label'
 GROUP BY report_date
 ORDER BY report_date;
+
+
+-- ============================================================================
+-- SECTION 23: PROMPT LOG METADATA (kiro_prompt_log)
+-- ============================================================================
+-- Populated by: python main.py --account <profile> --prompt-logs [--store-text]
+-- One row per request (requestId). prompt_text/response_text are NULL unless
+-- --store-text was used; read raw content from the .json.gz files otherwise.
+
+-- 23.0 Table DDL (also created automatically by init_schema)
+CREATE TABLE IF NOT EXISTS kiro_prompt_log (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    aws_account_id VARCHAR(16) NOT NULL,
+    account_label VARCHAR(32) NOT NULL,
+    request_id VARCHAR(64) NOT NULL,
+    user_id VARCHAR(128) NOT NULL,
+    user_id_normalized VARCHAR(128) NOT NULL,
+    event_time DATETIME(3) NOT NULL,
+    event_date DATE NOT NULL,
+    model_id VARCHAR(64),
+    chat_trigger_type VARCHAR(32),
+    prompt_length INT DEFAULT 0,
+    user_message_length INT DEFAULT 0,
+    response_length INT DEFAULT 0,
+    has_code_in_response TINYINT(1) DEFAULT 0,
+    code_reference_count INT DEFAULT 0,
+    prompt_text MEDIUMTEXT NULL,
+    response_text MEDIUMTEXT NULL,
+    source_file VARCHAR(255),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_prompt_log (aws_account_id, request_id),
+    INDEX idx_account_date (aws_account_id, event_date),
+    INDEX idx_user_date (user_id_normalized, event_date),
+    INDEX idx_model (model_id),
+    INDEX idx_event_time (event_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 23.1 Daily prompt request volume — Grafana time series
+SELECT
+    event_date AS time,
+    COUNT(*) AS requests,
+    COUNT(DISTINCT user_id_normalized) AS unique_users
+FROM kiro_prompt_log
+WHERE account_label = '$account_label'
+GROUP BY event_date
+ORDER BY event_date;
+
+-- 23.2 Requests by model — Grafana pie / stacked bar
+SELECT
+    event_date AS time,
+    model_id,
+    COUNT(*) AS requests
+FROM kiro_prompt_log
+WHERE account_label = '$account_label'
+GROUP BY event_date, model_id
+ORDER BY event_date;
+
+-- 23.3 Peak usage by hour of day — Grafana bar chart (heatmap of activity)
+SELECT
+    HOUR(event_time) AS hour_of_day,
+    COUNT(*) AS requests
+FROM kiro_prompt_log
+WHERE account_label = '$account_label'
+GROUP BY HOUR(event_time)
+ORDER BY hour_of_day;
+
+-- 23.4 Average prompt & response size over time — Grafana time series
+SELECT
+    event_date AS time,
+    ROUND(AVG(prompt_length)) AS avg_prompt_chars,
+    ROUND(AVG(user_message_length)) AS avg_user_msg_chars,
+    ROUND(AVG(response_length)) AS avg_response_chars
+FROM kiro_prompt_log
+WHERE account_label = '$account_label'
+GROUP BY event_date
+ORDER BY event_date;
+
+-- 23.5 Percent of responses containing code — Grafana time series (gauge/stat)
+SELECT
+    event_date AS time,
+    ROUND(SUM(has_code_in_response) / COUNT(*) * 100, 1) AS pct_with_code
+FROM kiro_prompt_log
+WHERE account_label = '$account_label'
+GROUP BY event_date
+ORDER BY event_date;
+
+-- 23.6 Top users by request count (current month) — Grafana table (joins email)
+SELECT
+    COALESCE(r.user_email, p.user_id_normalized) AS user,
+    COUNT(*) AS requests,
+    ROUND(AVG(p.prompt_length)) AS avg_prompt_chars,
+    ROUND(AVG(p.response_length)) AS avg_response_chars,
+    SUM(p.has_code_in_response) AS responses_with_code
+FROM kiro_prompt_log p
+LEFT JOIN (
+    SELECT DISTINCT user_id, user_email
+    FROM kiro_user_report WHERE account_label = '$account_label'
+) r ON r.user_id = p.user_id_normalized
+WHERE p.account_label = '$account_label'
+  AND p.event_date >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+GROUP BY user, p.user_id_normalized
+ORDER BY requests DESC
+LIMIT 20;
+
+-- 23.7 Chat trigger type breakdown — Grafana pie
+SELECT
+    chat_trigger_type,
+    COUNT(*) AS requests
+FROM kiro_prompt_log
+WHERE account_label = '$account_label'
+GROUP BY chat_trigger_type;
+
+-- 23.8 Full-text search on stored conversations (only if loaded with --store-text)
+-- Grafana table — filter by a keyword via a text variable $keyword
+SELECT
+    event_time AS time,
+    COALESCE(r.user_email, p.user_id_normalized) AS user,
+    p.model_id,
+    LEFT(p.prompt_text, 200) AS prompt_preview,
+    LEFT(p.response_text, 300) AS response_preview
+FROM kiro_prompt_log p
+LEFT JOIN (
+    SELECT DISTINCT user_id, user_email
+    FROM kiro_user_report WHERE account_label = '$account_label'
+) r ON r.user_id = p.user_id_normalized
+WHERE p.account_label = '$account_label'
+  AND (p.prompt_text LIKE CONCAT('%', '$keyword', '%')
+       OR p.response_text LIKE CONCAT('%', '$keyword', '%'))
+ORDER BY p.event_time DESC
+LIMIT 100;
+
+-- 23.9 Requests vs credits correlation (join prompt volume to credit spend)
+-- Grafana dual-axis time series
+SELECT
+    p.event_date AS time,
+    COUNT(*) AS prompt_requests,
+    COALESCE(c.credits, 0) AS credits_used
+FROM kiro_prompt_log p
+LEFT JOIN (
+    SELECT report_date, SUM(credits_used) AS credits
+    FROM kiro_user_report
+    WHERE account_label = '$account_label'
+    GROUP BY report_date
+) c ON c.report_date = p.event_date
+WHERE p.account_label = '$account_label'
+GROUP BY p.event_date, c.credits
+ORDER BY p.event_date;

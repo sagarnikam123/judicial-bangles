@@ -321,6 +321,42 @@ Each layer answers different questions:
 
 ---
 
+## MySQL Table: kiro_prompt_log (prompt log metadata)
+
+Prompt logs are stored in MySQL as **metadata rows** (one per request), not as raw
+gzipped files. Populated by `python main.py --account <profile> --prompt-logs`.
+Full prompt/response text is optional — stored only when `--store-text` is passed;
+otherwise the `*_text` columns are NULL and you read raw content from the `.json.gz`
+files (or via `read_logs.py`).
+
+| Column | Type | Source / Derivation | Meaning |
+|---|---|---|---|
+| `aws_account_id` | VARCHAR(16) | pipeline | Source AWS account (Grafana filter) |
+| `account_label` | VARCHAR(32) | pipeline | prod/dev label |
+| `request_id` | VARCHAR(64) | `...Response.requestId` | Unique per request (dedupe key) |
+| `user_id` | VARCHAR(128) | `...Request.userId` | Raw prompt_log form `d-<idc>.<uuid>` |
+| `user_id_normalized` | VARCHAR(128) | derived | Converted to user_report form `<idc>-<uuid>` for JOINs |
+| `event_time` | DATETIME(3) | `...Request.timeStamp` | Request timestamp, millisecond precision |
+| `event_date` | DATE | derived | `DATE(event_time)` — fast date filtering |
+| `model_id` | VARCHAR(64) | `...Request.modelId` | Model used (auto, claude-opus-4.6, …) |
+| `chat_trigger_type` | VARCHAR(32) | `...Request.chatTriggerType` | MANUAL, etc. |
+| `prompt_length` | INT | `len(prompt)` | Full prompt char count (incl. context) |
+| `user_message_length` | INT | derived | Char count between USER MESSAGE markers |
+| `response_length` | INT | `len(assistantResponse)` | Response char count |
+| `has_code_in_response` | TINYINT(1) | derived | 1 if response contains a ``` code block |
+| `code_reference_count` | INT | `len(codeReferenceEvents)` | OSS code references cited |
+| `prompt_text` | MEDIUMTEXT NULL | `prompt` | Full prompt (only if `--store-text`) |
+| `response_text` | MEDIUMTEXT NULL | `assistantResponse` | Full response (only if `--store-text`) |
+| `source_file` | VARCHAR(255) | filename | Original `.json.gz` for drill-down |
+
+**Unique key:** `(aws_account_id, request_id)` — idempotent, safe to re-run.
+**JOIN to emails:** `kiro_prompt_log.user_id_normalized = kiro_user_report.user_id`.
+
+Storage: metadata-only ≈ 250 bytes/row (~75 MB for 300k rows). With `--store-text`
+≈ 2-3 KB/row. See `docs/queries.sql` Section 23 for ready-made Grafana queries.
+
+---
+
 ## Appendix: UserId Format Differences
 
 The same user's ID looks different depending on which file type you're reading. This matters when you want to correlate a user across file types.

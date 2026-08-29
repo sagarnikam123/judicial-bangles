@@ -8,17 +8,24 @@ Workflow:
   4. Upsert into MySQL
 
 Run: python main.py [--account PROFILE] [--full] [--force] [--date YYYY-MM-DD]
-  --account  AWS profile name (see conf/config.py ACCOUNTS). Defaults to DEFAULT_AWS_PROFILE.
-  --full     Re-parse ALL local CSVs into DB for this account (regardless of what was just downloaded)
-  --force    Reset sync state and re-download files (today, or --date if given)
-  --date     Target date to re-download (YYYY-MM-DD), used with --force
+                    [--prompt-logs] [--store-text]
+  --account      AWS profile name (see conf/accounts.json). Defaults to DEFAULT_AWS_PROFILE.
+  --full         Re-parse ALL local CSVs into DB for this account
+  --force        Reset sync state and re-download files (today, or --date if given)
+  --date         Target date to re-download (YYYY-MM-DD), used with --force
+  --prompt-logs  Download prompt logs AND load their metadata into kiro_prompt_log
+  --store-text   Store full prompt/response text in the DB (default: metadata only)
 
 Examples:
   python main.py --account 111111111111_AdministratorAccess
   python main.py --account 222222222222_AdministratorAccess --force --date 2026-08-20
+  python main.py --account 222222222222_AdministratorAccess --prompt-logs --date 2026-08-22
+  python main.py --account 222222222222_AdministratorAccess --prompt-logs --store-text --date 2026-08-22
 """
 
 import argparse
+import gzip
+import json
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +37,7 @@ from db import (
     get_connection,
     init_schema,
     upsert_by_user_analytic_rows,
+    upsert_prompt_log_rows,
     upsert_user_report_rows,
 )
 from s3_sync import sync_all
@@ -169,6 +177,136 @@ def parse_by_user_analytic_csv(filepath: Path, account_id: str, account_label: s
     return rows
 
 
+def _normalize_user_id(user_id: str) -> str:
+    """Convert prompt_log userId to user_report form for JOINs.
+
+    prompt_logs: d-<idc>.<uuid>   ->   user_report: <idc>-<uuid>
+    Leaves already-normalized IDs unchanged.
+    """
+    if not user_id:
+        return ""
+    uid = user_id
+    if uid.startswith("d-"):
+        uid = uid[2:]
+    # replace the first "." (idc/uuid separator) with "-"
+    return uid.replace(".", "-", 1)
+
+
+def _extract_user_message(prompt: str) -> str:
+    """Return the text between USER MESSAGE markers, or the whole prompt if absent."""
+    if not prompt:
+        return ""
+    begin = "--- USER MESSAGE BEGIN ---"
+    end = "--- USER MESSAGE END ---"
+    if begin in prompt and end in prompt:
+        return prompt.split(begin, 1)[1].split(end, 1)[0].strip()
+    return prompt
+
+
+def _parse_event_time(ts: str) -> tuple[str, str]:
+    """Parse an ISO8601 timestamp into (datetime_str 'YYYY-MM-DD HH:MM:SS.mmm', date_str).
+
+    Handles nanosecond precision (trims to milliseconds for MySQL DATETIME(3)).
+    """
+    if not ts:
+        return None, None
+    clean = ts.rstrip("Z")
+    # split fractional seconds; keep only 3 digits (ms) for MySQL
+    if "." in clean:
+        base, frac = clean.split(".", 1)
+        frac = frac[:3].ljust(3, "0")
+        clean = f"{base}.{frac}"
+        fmt = "%Y-%m-%dT%H:%M:%S.%f"
+    else:
+        fmt = "%Y-%m-%dT%H:%M:%S"
+    try:
+        dt = datetime.strptime(clean, fmt)
+        return dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3], dt.strftime("%Y-%m-%d")
+    except ValueError:
+        return None, None
+
+
+def parse_prompt_log_file(filepath: Path, account_id: str, account_label: str,
+                          store_text: bool = False) -> list[tuple]:
+    """Parse one prompt_log .json.gz file into rows ready for upsert.
+
+    A single file may contain multiple records. Column order must match
+    db.UPSERT_PROMPT_LOG.
+    """
+    try:
+        with gzip.open(filepath, "rt", encoding="utf-8") as gz:
+            data = json.load(gz)
+    except Exception as e:
+        logger.error(f"Failed to read {filepath}: {e}")
+        return []
+
+    rows = []
+    for rec in data.get("records", []):
+        req = rec.get("generateAssistantResponseEventRequest", {})
+        resp = rec.get("generateAssistantResponseEventResponse", {})
+
+        request_id = resp.get("requestId")
+        if not request_id:
+            continue  # can't dedupe without a request id — skip
+
+        user_id = req.get("userId", "")
+        prompt = req.get("prompt", "") or ""
+        response = resp.get("assistantResponse", "") or ""
+        event_time, event_date = _parse_event_time(req.get("timeStamp", ""))
+        if not event_time:
+            continue  # skip records without a usable timestamp
+
+        rows.append((
+            account_id,
+            account_label,
+            request_id,
+            user_id,
+            _normalize_user_id(user_id),
+            event_time,
+            event_date,
+            req.get("modelId"),
+            req.get("chatTriggerType"),
+            len(prompt),
+            len(_extract_user_message(prompt)),
+            len(response),
+            1 if "```" in response else 0,
+            len(resp.get("codeReferenceEvents") or []),
+            prompt if store_text else None,
+            response if store_text else None,
+            filepath.name,
+        ))
+    return rows
+
+
+def load_all_prompt_logs(account_id: str, account_label: str, store_text: bool = False) -> int:
+    """Parse and upsert ALL local prompt_log files for one account.
+
+    data/<account_id>/prompt_logs/*.json.gz
+    """
+    prompt_dir = get_account_data_dir(account_id) / "prompt_logs"
+    if not prompt_dir.exists():
+        return 0
+
+    conn = get_connection()
+    total = 0
+    try:
+        batch = []
+        for f in sorted(prompt_dir.glob("*.json.gz")):
+            batch.extend(parse_prompt_log_file(f, account_id, account_label, store_text))
+            # flush in batches to keep memory bounded on large corpora (300k+ files)
+            if len(batch) >= 1000:
+                upsert_prompt_log_rows(batch, conn=conn)
+                total += len(batch)
+                batch = []
+        if batch:
+            upsert_prompt_log_rows(batch, conn=conn)
+            total += len(batch)
+    finally:
+        conn.close()
+
+    return total
+
+
 def load_all_local_csvs(account_id: str, account_label: str) -> dict:
     """Parse and upsert ALL local CSVs for one account (full reload mode).
 
@@ -201,7 +339,8 @@ def load_all_local_csvs(account_id: str, account_label: str) -> dict:
     return {"user_report_rows": total_ur, "by_user_analytic_rows": total_an}
 
 
-def run(account: str | None = None, full_reload: bool = False, force: bool = False, target_date: str | None = None, prompt_logs: bool = False):
+def run(account: str | None = None, full_reload: bool = False, force: bool = False,
+        target_date: str | None = None, prompt_logs: bool = False, store_text: bool = False):
     """Main entry point for a single AWS account."""
     cfg = get_account_config(account)
     logger.info(f"=== Kiro Usage Analytics Sync: {cfg['label']} ({cfg['account_id']}) ===")
@@ -214,6 +353,12 @@ def run(account: str | None = None, full_reload: bool = False, force: bool = Fal
     # ponytail: always reload all local CSVs for this account (small file counts,
     # simplest correct option for daily cron); --full is kept as an explicit alias
     load_result = load_all_local_csvs(cfg["account_id"], cfg["label"])
+
+    # Load prompt log metadata only when prompt logs were requested (opt-in — the
+    # dev corpus is 300k+ files, so we don't scan it on every ordinary sync).
+    if prompt_logs:
+        prompt_rows = load_all_prompt_logs(cfg["account_id"], cfg["label"], store_text=store_text)
+        load_result["prompt_log_rows"] = prompt_rows
 
     logger.info(f"DB load: {load_result}")
     logger.info("=== Done ===")
@@ -234,8 +379,11 @@ if __name__ == "__main__":
     parser.add_argument("--date", type=str, default=None,
                         help="Target date to re-download (YYYY-MM-DD). Used with --force to re-fetch a specific day.")
     parser.add_argument("--prompt-logs", action="store_true",
-                        help="Also download prompt logs (.json.gz). Use with --date to limit scope.")
+                        help="Also download prompt logs (.json.gz) AND load their metadata into kiro_prompt_log. Use with --date to limit scope.")
+    parser.add_argument("--store-text", action="store_true",
+                        help="Store full prompt/response text in the DB (default: metadata only, text stays NULL and is read from files).")
     args = parser.parse_args()
 
-    result = run(account=args.account, full_reload=args.full, force=args.force, target_date=args.date, prompt_logs=args.prompt_logs)
+    result = run(account=args.account, full_reload=args.full, force=args.force,
+                 target_date=args.date, prompt_logs=args.prompt_logs, store_text=args.store_text)
     print(f"\nResult: {result}")

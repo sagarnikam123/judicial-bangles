@@ -108,6 +108,36 @@ CREATE TABLE IF NOT EXISTS kiro_by_user_analytic (
 """
 
 
+CREATE_PROMPT_LOG = """
+CREATE TABLE IF NOT EXISTS kiro_prompt_log (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    aws_account_id VARCHAR(16) NOT NULL,
+    account_label VARCHAR(32) NOT NULL,
+    request_id VARCHAR(64) NOT NULL,
+    user_id VARCHAR(128) NOT NULL,
+    user_id_normalized VARCHAR(128) NOT NULL,
+    event_time DATETIME(3) NOT NULL,
+    event_date DATE NOT NULL,
+    model_id VARCHAR(64),
+    chat_trigger_type VARCHAR(32),
+    prompt_length INT DEFAULT 0,
+    user_message_length INT DEFAULT 0,
+    response_length INT DEFAULT 0,
+    has_code_in_response TINYINT(1) DEFAULT 0,
+    code_reference_count INT DEFAULT 0,
+    prompt_text MEDIUMTEXT NULL,
+    response_text MEDIUMTEXT NULL,
+    source_file VARCHAR(255),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_prompt_log (aws_account_id, request_id),
+    INDEX idx_account_date (aws_account_id, event_date),
+    INDEX idx_user_date (user_id_normalized, event_date),
+    INDEX idx_model (model_id),
+    INDEX idx_event_time (event_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+
 def init_schema():
     """Create tables if they don't exist."""
     conn = get_connection()
@@ -115,6 +145,7 @@ def init_schema():
         with conn.cursor() as cur:
             cur.execute(CREATE_USER_REPORT)
             cur.execute(CREATE_BY_USER_ANALYTIC)
+            cur.execute(CREATE_PROMPT_LOG)
         logger.info("Schema initialized")
     finally:
         conn.close()
@@ -252,6 +283,53 @@ def upsert_by_user_analytic_rows(rows: list[tuple], conn=None):
         with conn.cursor() as cur:
             cur.executemany(UPSERT_BY_USER_ANALYTIC, rows)
         logger.info(f"Upserted {len(rows)} rows into kiro_by_user_analytic")
+    finally:
+        if owns_conn:
+            conn.close()
+
+
+UPSERT_PROMPT_LOG = """
+INSERT INTO kiro_prompt_log (
+    aws_account_id, account_label, request_id, user_id, user_id_normalized,
+    event_time, event_date, model_id, chat_trigger_type,
+    prompt_length, user_message_length, response_length,
+    has_code_in_response, code_reference_count,
+    prompt_text, response_text, source_file
+) VALUES (
+    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+) ON DUPLICATE KEY UPDATE
+    account_label = VALUES(account_label),
+    user_id = VALUES(user_id),
+    user_id_normalized = VALUES(user_id_normalized),
+    event_time = VALUES(event_time),
+    event_date = VALUES(event_date),
+    model_id = VALUES(model_id),
+    chat_trigger_type = VALUES(chat_trigger_type),
+    prompt_length = VALUES(prompt_length),
+    user_message_length = VALUES(user_message_length),
+    response_length = VALUES(response_length),
+    has_code_in_response = VALUES(has_code_in_response),
+    code_reference_count = VALUES(code_reference_count),
+    prompt_text = VALUES(prompt_text),
+    response_text = VALUES(response_text),
+    source_file = VALUES(source_file);
+"""
+
+
+def upsert_prompt_log_rows(rows: list[tuple], conn=None):
+    """Batch upsert rows into kiro_prompt_log.
+
+    Pass an existing `conn` to reuse a connection across multiple calls.
+    Each row tuple must match the column order in UPSERT_PROMPT_LOG.
+    """
+    if not rows:
+        return
+    owns_conn = conn is None
+    conn = conn or get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.executemany(UPSERT_PROMPT_LOG, rows)
+        logger.info(f"Upserted {len(rows)} rows into kiro_prompt_log")
     finally:
         if owns_conn:
             conn.close()

@@ -88,7 +88,7 @@ s3://my-org-kiro-usage-report-dev/                      (dev  · 222222222222)
 }
 ```
 
-> Note: dev's prompt-logs bucket is currently the only one with live prompt log data (245 MB / 313k+ files as of Aug 25, 2026). Use `--prompt-logs --date <YYYY-MM-DD>` to download a specific day's worth. Prompt logs are downloaded only, not loaded into MySQL (yet).
+> Note: prompt logs can be very high volume. Use `--prompt-logs --date <YYYY-MM-DD>` to download a specific day's worth. Prompt log **metadata** is loaded into the `kiro_prompt_log` MySQL table; full text is stored only with `--store-text` (otherwise `*_text` columns stay NULL and raw content is read from the `.json.gz` files).
 
 ---
 
@@ -462,6 +462,6 @@ python main.py --account <your_profile_name>
 
 ## Roadmap / Not Yet Implemented
 
-- **Prompt log DB ingestion** — prompt logs can be downloaded (`--prompt-logs`) but are NOT loaded into MySQL yet. They're gzipped JSON with full conversation content — needs a flattened metadata table or document store if you want to query them from Grafana. For now, read them locally with `gunzip -c <file> | python -m json.tool`.
+- **Full-text search at scale** — prompt/response text can be stored in MySQL with `--store-text`, but `LIKE '%keyword%'` doesn't scale to millions of rows. For heavy conversation search, consider adding a `FULLTEXT` index or a dedicated store (e.g. OpenSearch).
 - **GenerateCompletions** — dev account also has inline completion logs (`GenerateCompletions/`), not yet synced. Same format as `GenerateAssistantResponse` but for autocomplete events.
 - **Grafana dashboard** — not yet provisioned; `queries.sql` has all the panel queries ready to copy-paste.
