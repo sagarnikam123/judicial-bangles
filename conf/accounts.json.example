@@ -1,0 +1,20 @@
+{
+  "111111111111_AdministratorAccess": {
+    "account_id": "111111111111",
+    "label": "prod",
+    "region": "us-east-1",
+    "user_report_bucket": "my-org-kiro-usage-activity-report",
+    "user_report_prefix": "reports/AWSLogs/111111111111/KiroLogs/",
+    "prompt_log_bucket": "my-org-kiro-usage-report",
+    "prompt_log_prefix": "Prompt_Logging/Prompt_Logging/AWSLogs/111111111111/KiroLogs/"
+  },
+  "222222222222_AdministratorAccess": {
+    "account_id": "222222222222",
+    "label": "dev",
+    "region": "us-east-1",
+    "user_report_bucket": "my-org-kiro-usage-report-dev",
+    "user_report_prefix": "reports/AWSLogs/222222222222/KiroLogs/",
+    "prompt_log_bucket": "my-org-kiro-usage-report-dev",
+    "prompt_log_prefix": "prompt-logs/AWSLogs/222222222222/KiroLogs/"
+  }
+}
