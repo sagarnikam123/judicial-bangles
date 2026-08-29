@@ -1,4 +1,4 @@
-# Kiro Usage Analytics
+# Judicial Bangles
 
 Syncs Kiro (Amazon Q Developer) usage reports from S3 into MySQL for analysis and Grafana dashboards.
 
