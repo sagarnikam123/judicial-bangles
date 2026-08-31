@@ -26,6 +26,11 @@ Work one backend at a time. Pick your backend, run its column throughout.
 > Connection settings for every backend live in `conf/.env.kiro` (see `.env.kiro.example`).
 > On macOS the client tools are under `/opt/homebrew/opt/<tool>/bin` — commands below assume they're on PATH.
 
+> **Local test accounts** (full admin, created on all SQL/ClickHouse backends):
+> `root` / `root#123` and `admin` / `admin#123`. Commands below use `root`.
+> **OpenSearch/Elasticsearch** (brew) run with the **security plugin disabled** — no
+> auth, the endpoint is open, so no username/password is needed (or possible).
+
 ---
 
 ## 1. Download data from S3
@@ -107,28 +112,48 @@ curl -s http://localhost:9200              # cluster info JSON
 
 **You do not need to pre-create tables** — every writer runs `init_schema()` lazily on first write, generating the correct DDL/mapping per backend. Section 4 creates them automatically.
 
-Prerequisites are just the target database/user existing:
+Prerequisites are just the target database existing (the `root`/`admin` accounts
+already have full access; the writer auto-creates the `kiro` database on ClickHouse).
 
 ### MySQL
 ```bash
-mysql -u root -e "CREATE DATABASE IF NOT EXISTS kiro CHARACTER SET utf8mb4;
-  CREATE USER IF NOT EXISTS 'kiro'@'127.0.0.1' IDENTIFIED BY 'kiro';
-  GRANT ALL PRIVILEGES ON kiro.* TO 'kiro'@'127.0.0.1'; FLUSH PRIVILEGES;"
+mysql -u root -p'root#123' -h 127.0.0.1 -e "CREATE DATABASE IF NOT EXISTS kiro CHARACTER SET utf8mb4;"
 ```
 
 ### PostgreSQL
 ```bash
-createdb kiro 2>/dev/null; psql -d kiro -c "
-  DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='kiro')
-    THEN CREATE ROLE kiro LOGIN PASSWORD 'kiro'; END IF; END \$\$;
-  GRANT ALL ON SCHEMA public TO kiro;"
+PGPASSWORD='root#123' createdb -U root -h 127.0.0.1 kiro 2>/dev/null || true
 ```
 
 ### ClickHouse
 ```bash
-# The writer auto-creates the database, but to do it manually:
-curl -s http://localhost:8123/ -d "CREATE DATABASE IF NOT EXISTS kiro"
+# The writer auto-creates it; to do it manually:
+curl -s http://localhost:8123/ --user "root:root#123" -d "CREATE DATABASE IF NOT EXISTS kiro"
 ```
+
+<details><summary>Create the two test accounts (already done on your machine)</summary>
+
+```bash
+# MySQL
+mysql -u root -e "
+ALTER USER 'root'@'localhost' IDENTIFIED BY 'root#123';
+CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY 'root#123';
+CREATE USER IF NOT EXISTS 'admin'@'127.0.0.1' IDENTIFIED BY 'admin#123';
+GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1', 'admin'@'127.0.0.1' WITH GRANT OPTION;
+FLUSH PRIVILEGES;"
+
+# PostgreSQL
+psql -d postgres -c "CREATE ROLE root  LOGIN SUPERUSER PASSWORD 'root#123';"
+psql -d postgres -c "CREATE ROLE admin LOGIN SUPERUSER PASSWORD 'admin#123';"
+
+# ClickHouse (default user has access management in the brew/cask build)
+curl -s http://localhost:8123/ -d "CREATE USER IF NOT EXISTS root  IDENTIFIED BY 'root#123'"
+curl -s http://localhost:8123/ -d "CREATE USER IF NOT EXISTS admin IDENTIFIED BY 'admin#123'"
+curl -s http://localhost:8123/ -d "GRANT CURRENT GRANTS ON *.* TO root  WITH GRANT OPTION"
+curl -s http://localhost:8123/ -d "GRANT CURRENT GRANTS ON *.* TO admin WITH GRANT OPTION"
+curl -s http://localhost:8123/ -d "GRANT ACCESS MANAGEMENT ON *.* TO root, admin"
+```
+</details>
 
 ### OpenSearch / Elasticsearch
 No setup needed — indexes (`kiro-kiro_user_report`, etc.) are created on first write with generated field mappings.
@@ -180,7 +205,7 @@ Quick CLI checks. Full analytics library is in [`queries.sql`](queries.sql) (MyS
 
 **MySQL**
 ```bash
-mysql -u kiro -pkiro -h 127.0.0.1 kiro -e "
+mysql -u root -p'root#123' -h 127.0.0.1 kiro -e "
 SELECT 'user_report' t, COUNT(*) FROM kiro_user_report
 UNION ALL SELECT 'by_user_analytic', COUNT(*) FROM kiro_by_user_analytic
 UNION ALL SELECT 'prompt_log', COUNT(*) FROM kiro_prompt_log;"
@@ -188,7 +213,7 @@ UNION ALL SELECT 'prompt_log', COUNT(*) FROM kiro_prompt_log;"
 
 **PostgreSQL**
 ```bash
-PGPASSWORD=kiro psql -U kiro -h 127.0.0.1 -d kiro -c "
+PGPASSWORD='root#123' psql -U root -h 127.0.0.1 -d kiro -c "
 SELECT 'user_report' t, COUNT(*) FROM kiro_user_report
 UNION ALL SELECT 'by_user_analytic', COUNT(*) FROM kiro_by_user_analytic
 UNION ALL SELECT 'prompt_log', COUNT(*) FROM kiro_prompt_log;"
@@ -196,7 +221,7 @@ UNION ALL SELECT 'prompt_log', COUNT(*) FROM kiro_prompt_log;"
 
 **ClickHouse** (use `FINAL` for the deduped view)
 ```bash
-curl -s http://localhost:8123/ -d "
+curl -s http://localhost:8123/ --user "root:root#123" -d "
 SELECT 'user_report' t, count() FROM kiro.kiro_user_report FINAL
 UNION ALL SELECT 'by_user_analytic', count() FROM kiro.kiro_by_user_analytic FINAL
 UNION ALL SELECT 'prompt_log', count() FROM kiro.kiro_prompt_log FINAL FORMAT PrettyCompact"
@@ -219,7 +244,7 @@ GROUP BY user_email ORDER BY credits DESC LIMIT 10;
 
 **Prompt requests by model (ClickHouse)**
 ```bash
-curl -s http://localhost:8123/ -d "
+curl -s http://localhost:8123/ --user "root:root#123" -d "
 SELECT model_id, count() reqs FROM kiro.kiro_prompt_log FINAL
 GROUP BY model_id ORDER BY reqs DESC FORMAT PrettyCompact"
 ```
@@ -247,7 +272,7 @@ Empties tables/indexes but keeps schema — re-loadable immediately.
 
 ### MySQL
 ```bash
-mysql -u kiro -pkiro -h 127.0.0.1 kiro -e "
+mysql -u root -p'root#123' -h 127.0.0.1 kiro -e "
 TRUNCATE TABLE kiro_user_report;
 TRUNCATE TABLE kiro_by_user_analytic;
 TRUNCATE TABLE kiro_prompt_log;"
@@ -255,14 +280,14 @@ TRUNCATE TABLE kiro_prompt_log;"
 
 ### PostgreSQL
 ```bash
-PGPASSWORD=kiro psql -U kiro -h 127.0.0.1 -d kiro -c "
+PGPASSWORD='root#123' psql -U root -h 127.0.0.1 -d kiro -c "
 TRUNCATE kiro_user_report, kiro_by_user_analytic, kiro_prompt_log RESTART IDENTITY;"
 ```
 
 ### ClickHouse
 ```bash
 for t in kiro_user_report kiro_by_user_analytic kiro_prompt_log; do
-  curl -s http://localhost:8123/ -d "TRUNCATE TABLE kiro.$t"; done
+  curl -s http://localhost:8123/ --user "root:root#123" -d "TRUNCATE TABLE kiro.$t"; done
 ```
 
 ### OpenSearch / Elasticsearch
@@ -281,22 +306,22 @@ Removes tables/indexes entirely. Next load recreates them (Section 4).
 
 ### MySQL
 ```bash
-mysql -u kiro -pkiro -h 127.0.0.1 kiro -e "
+mysql -u root -p'root#123' -h 127.0.0.1 kiro -e "
 DROP TABLE IF EXISTS kiro_user_report, kiro_by_user_analytic, kiro_prompt_log;"
 ```
 
 ### PostgreSQL
 ```bash
-PGPASSWORD=kiro psql -U kiro -h 127.0.0.1 -d kiro -c "
+PGPASSWORD='root#123' psql -U root -h 127.0.0.1 -d kiro -c "
 DROP TABLE IF EXISTS kiro_user_report, kiro_by_user_analytic, kiro_prompt_log;"
 ```
 
 ### ClickHouse
 ```bash
 for t in kiro_user_report kiro_by_user_analytic kiro_prompt_log; do
-  curl -s http://localhost:8123/ -d "DROP TABLE IF EXISTS kiro.$t"; done
+  curl -s http://localhost:8123/ --user "root:root#123" -d "DROP TABLE IF EXISTS kiro.$t"; done
 # Drop the whole database instead:
-# curl -s http://localhost:8123/ -d "DROP DATABASE IF EXISTS kiro"
+# curl -s http://localhost:8123/ --user "root:root#123" -d "DROP DATABASE IF EXISTS kiro"
 ```
 
 ### OpenSearch / Elasticsearch
