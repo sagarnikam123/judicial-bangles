@@ -1150,3 +1150,255 @@ LEFT JOIN (
 WHERE p.account_label = '$account_label'
 GROUP BY p.event_date, c.credits
 ORDER BY p.event_date;
+
+
+-- ============================================================================
+-- SECTION 24: CID-STYLE DASHBOARD BLUEPRINT (AWS Kiro User Activity)
+-- ============================================================================
+-- Mirrors the AWS Cloud Intelligence Dashboards "Kiro User Activity" layout
+-- (5 tabs). One query per panel, MySQL dialect, ready to paste into Grafana.
+--
+-- CID control -> Grafana equivalent:
+--   Lookback period  -> Grafana time range picker (use $__timeFilter(report_date))
+--   AWS Account       -> variable $account_label   (All = remove the WHERE line)
+--   User              -> variable $user_email
+--   Model             -> variable $model            (kiro_prompt_log.model_id)
+--   Client Type       -> variable $client_type
+--
+-- Template variables to define in Grafana (type=Query, "Include All" enabled):
+--   account_label : SELECT DISTINCT account_label FROM kiro_user_report ORDER BY 1
+--   client_type   : SELECT DISTINCT client_type   FROM kiro_user_report ORDER BY 1
+--   user_email    : SELECT DISTINCT user_email     FROM kiro_user_report WHERE account_label IN ($account_label) ORDER BY 1
+--   model         : SELECT DISTINCT model_id       FROM kiro_prompt_log   WHERE account_label IN ($account_label) ORDER BY 1
+--
+-- NOTE on models: the CID "Daily Messages by Model" (Auto/Claude/Deepseek/GLM/…)
+-- is driven by kiro_prompt_log.model_id (dynamic), NOT the fixed wide columns in
+-- kiro_user_report. Panels below use prompt_log for the model breakdown so any
+-- model appears automatically.
+
+
+-- ── TAB 1: EXECUTIVE SUMMARY ────────────────────────────────────────────────
+
+-- 24.1 Total Kiro Subscriptions (Stat) — distinct subscribed users in range
+SELECT COUNT(DISTINCT user_email) AS total_subscriptions
+FROM kiro_user_report
+WHERE $__timeFilter(report_date)
+  AND account_label IN ($account_label);
+
+-- 24.2 Total Active Kiro Users (Stat) — users with any message in range
+SELECT COUNT(DISTINCT user_email) AS active_users
+FROM kiro_user_report
+WHERE $__timeFilter(report_date)
+  AND account_label IN ($account_label)
+  AND total_messages > 0;
+
+-- 24.3 Total Inactive Kiro Users (Stat) — subscribed but zero messages in range
+SELECT COUNT(*) AS inactive_users FROM (
+    SELECT user_email, SUM(total_messages) AS msgs
+    FROM kiro_user_report
+    WHERE $__timeFilter(report_date)
+      AND account_label IN ($account_label)
+    GROUP BY user_email
+    HAVING msgs = 0
+) t;
+
+-- 24.4 Total Messages (Stat)
+SELECT SUM(total_messages) AS total_messages
+FROM kiro_user_report
+WHERE $__timeFilter(report_date)
+  AND account_label IN ($account_label);
+
+-- 24.5 Credits Used (Stat)
+SELECT ROUND(SUM(credits_used)) AS credits_used
+FROM kiro_user_report
+WHERE $__timeFilter(report_date)
+  AND account_label IN ($account_label);
+
+-- 24.6 Overage Credits (Stat)
+SELECT ROUND(SUM(overage_credits_used)) AS overage_credits
+FROM kiro_user_report
+WHERE $__timeFilter(report_date)
+  AND account_label IN ($account_label);
+
+-- 24.7 Daily Active Users by Client Type (Donut) — distinct users per client type
+SELECT client_type, COUNT(DISTINCT user_email) AS users
+FROM kiro_user_report
+WHERE $__timeFilter(report_date)
+  AND account_label IN ($account_label)
+  AND total_messages > 0
+GROUP BY client_type;
+
+-- 24.8 Daily Active Users by Client Type (Stacked bar, time series)
+SELECT
+    report_date AS time,
+    client_type,
+    COUNT(DISTINCT user_email) AS active_users
+FROM kiro_user_report
+WHERE $__timeFilter(report_date)
+  AND account_label IN ($account_label)
+  AND total_messages > 0
+GROUP BY report_date, client_type
+ORDER BY report_date;
+
+
+-- ── TAB 2: USER ENGAGEMENT ──────────────────────────────────────────────────
+
+-- 24.9 Top 50 Users by Message Count, split by model (horizontal stacked bar)
+-- Messages per user per model from prompt_log (the CID "by Model" split).
+SELECT
+    COALESCE(r.user_email, p.user_id_normalized) AS user,
+    p.model_id,
+    COUNT(*) AS messages
+FROM kiro_prompt_log p
+LEFT JOIN (
+    SELECT DISTINCT user_id, user_email FROM kiro_user_report
+    WHERE account_label IN ($account_label)
+) r ON r.user_id = p.user_id_normalized
+WHERE $__timeFilter(p.event_date)
+  AND p.account_label IN ($account_label)
+  AND p.model_id IN ($model)
+GROUP BY user, p.model_id
+ORDER BY messages DESC
+LIMIT 50;
+
+-- 24.10 Users by Message Count over time (stacked bar by user)
+SELECT
+    p.event_date AS time,
+    COALESCE(r.user_email, p.user_id_normalized) AS user,
+    COUNT(*) AS messages
+FROM kiro_prompt_log p
+LEFT JOIN (
+    SELECT DISTINCT user_id, user_email FROM kiro_user_report
+    WHERE account_label IN ($account_label)
+) r ON r.user_id = p.user_id_normalized
+WHERE $__timeFilter(p.event_date)
+  AND p.account_label IN ($account_label)
+GROUP BY p.event_date, user
+ORDER BY p.event_date;
+
+
+-- ── TAB 3: CREDIT & OVERAGE TRACKING ────────────────────────────────────────
+
+-- 24.11 Users at Risk (Stat) — ≥75% of plan credits consumed in range
+-- Plan credits: PRO=1000, PRO_PLUS=2000, PRO_MAX=5000 (adjust to your plans)
+SELECT COUNT(*) AS users_at_risk FROM (
+    SELECT user_email, subscription_tier, SUM(credits_used) AS used,
+        CASE subscription_tier WHEN 'PRO' THEN 1000 WHEN 'PRO_PLUS' THEN 2000
+             WHEN 'PRO_MAX' THEN 5000 ELSE NULL END AS plan
+    FROM kiro_user_report
+    WHERE $__timeFilter(report_date)
+      AND account_label IN ($account_label)
+    GROUP BY user_email, subscription_tier
+    HAVING plan IS NOT NULL AND used >= 0.75 * plan
+) t;
+
+-- 24.12 Users in Overage (Stat)
+SELECT COUNT(DISTINCT user_email) AS users_in_overage
+FROM kiro_user_report
+WHERE $__timeFilter(report_date)
+  AND account_label IN ($account_label)
+  AND overage_credits_used > 0;
+
+-- 24.13 Daily Credits Used vs Overage (stacked bar) — CID's main credit chart
+SELECT
+    report_date AS time,
+    SUM(credits_used) AS credits_used,
+    SUM(overage_credits_used) AS overage_credits
+FROM kiro_user_report
+WHERE $__timeFilter(report_date)
+  AND account_label IN ($account_label)
+GROUP BY report_date
+ORDER BY report_date;
+
+-- 24.14 Per-user plan utilization (table) — supports the "at risk" list
+SELECT
+    user_email,
+    subscription_tier,
+    ROUND(SUM(credits_used)) AS credits_used,
+    CASE subscription_tier WHEN 'PRO' THEN 1000 WHEN 'PRO_PLUS' THEN 2000
+         WHEN 'PRO_MAX' THEN 5000 ELSE NULL END AS plan_credits,
+    ROUND(SUM(credits_used) / CASE subscription_tier WHEN 'PRO' THEN 1000
+         WHEN 'PRO_PLUS' THEN 2000 WHEN 'PRO_MAX' THEN 5000 ELSE NULL END * 100, 1) AS utilization_pct
+FROM kiro_user_report
+WHERE $__timeFilter(report_date)
+  AND account_label IN ($account_label)
+GROUP BY user_email, subscription_tier
+ORDER BY utilization_pct DESC;
+
+
+-- ── TAB 4: MODEL & CLIENT BREAKDOWN ─────────────────────────────────────────
+
+-- 24.15 Daily Messages by Model (stacked bar) — CID's headline model chart
+-- Uses prompt_log.model_id so every model (Auto, Claude*, Deepseek, GLM, Qwen…)
+-- shows up automatically without schema changes.
+SELECT
+    event_date AS time,
+    model_id,
+    COUNT(*) AS messages
+FROM kiro_prompt_log
+WHERE $__timeFilter(event_date)
+  AND account_label IN ($account_label)
+  AND model_id IN ($model)
+GROUP BY event_date, model_id
+ORDER BY event_date;
+
+-- 24.16 Message share by model (pie) — totals over the range
+SELECT model_id, COUNT(*) AS messages
+FROM kiro_prompt_log
+WHERE $__timeFilter(event_date)
+  AND account_label IN ($account_label)
+GROUP BY model_id
+ORDER BY messages DESC;
+
+-- 24.17 Daily messages by client type (stacked bar) — from report table
+SELECT
+    report_date AS time,
+    client_type,
+    SUM(total_messages) AS messages
+FROM kiro_user_report
+WHERE $__timeFilter(report_date)
+  AND account_label IN ($account_label)
+  AND client_type IN ($client_type)
+GROUP BY report_date, client_type
+ORDER BY report_date;
+
+-- 24.18 Client type share (pie)
+SELECT client_type, SUM(total_messages) AS messages
+FROM kiro_user_report
+WHERE $__timeFilter(report_date)
+  AND account_label IN ($account_label)
+GROUP BY client_type;
+
+
+-- ── TAB 5 / EXTRA: PROMPT ACTIVITY (Grafana-native, not in QuickSight CID) ──
+-- The CID has no prompt-content tab (QuickSight can't index text). These add
+-- value the original couldn't — full-text on the stored conversations.
+
+-- 24.19 Responses containing code, % over time (gauge/time series)
+SELECT
+    event_date AS time,
+    ROUND(SUM(has_code_in_response) / COUNT(*) * 100, 1) AS pct_with_code
+FROM kiro_prompt_log
+WHERE $__timeFilter(event_date)
+  AND account_label IN ($account_label)
+GROUP BY event_date
+ORDER BY event_date;
+
+-- 24.20 Prompt search (table) — needs --store-text; filter via a text var $keyword
+SELECT
+    event_time AS time,
+    COALESCE(r.user_email, p.user_id_normalized) AS user,
+    p.model_id,
+    LEFT(p.prompt_text, 200) AS prompt_preview,
+    LEFT(p.response_text, 300) AS response_preview
+FROM kiro_prompt_log p
+LEFT JOIN (
+    SELECT DISTINCT user_id, user_email FROM kiro_user_report
+    WHERE account_label IN ($account_label)
+) r ON r.user_id = p.user_id_normalized
+WHERE $__timeFilter(p.event_time)
+  AND p.account_label IN ($account_label)
+  AND (p.prompt_text LIKE CONCAT('%', '$keyword', '%')
+       OR p.response_text LIKE CONCAT('%', '$keyword', '%'))
+ORDER BY p.event_time DESC
+LIMIT 100;
