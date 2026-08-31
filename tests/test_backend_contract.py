@@ -136,6 +136,40 @@ def test_generated_sql_covers_every_column():
         print(f"OK: generated SQL covers all {n} columns for {ds.name}")
 
 
+def test_clickhouse_coerces_string_dates_to_objects():
+    """Parsers emit dates as strings; the ClickHouse driver needs date/datetime
+    objects for Date/DateTime columns (a plain str raises TypeError on insert).
+    Guards the _coerce conversion. Offline — no ClickHouse server needed.
+    """
+    from datetime import date, datetime
+
+    from writers.base import PROMPT_LOG, USER_REPORT
+    from writers.clickhouse_writer import ClickHouseWriter
+
+    w = ClickHouseWriter()
+
+    # user_report: report_date (date_col) as "YYYY-MM-DD" string -> date
+    ur_row = tuple("x" if c not in USER_REPORT.int_cols + USER_REPORT.float_cols
+                   + USER_REPORT.bool_cols else 0 for c in USER_REPORT.columns)
+    ur_row = tuple(("2026-08-22" if c == "report_date" else v)
+                   for c, v in zip(USER_REPORT.columns, ur_row))
+    coerced = dict(zip(USER_REPORT.columns, w._coerce(USER_REPORT, ur_row)))
+    assert isinstance(coerced["report_date"], date), type(coerced["report_date"])
+
+    # prompt_log: event_time (datetime_col) with ms + event_date -> datetime/date
+    pl = {c: ("2026-08-22 10:11:12.345" if c == "event_time"
+              else "2026-08-22" if c == "event_date"
+              else None if c in PROMPT_LOG.text_cols
+              else 0 if c in PROMPT_LOG.int_cols + PROMPT_LOG.bool_cols
+              else "x") for c in PROMPT_LOG.columns}
+    coerced = dict(zip(PROMPT_LOG.columns, w._coerce(PROMPT_LOG, tuple(pl[c] for c in PROMPT_LOG.columns))))
+    assert isinstance(coerced["event_time"], datetime), type(coerced["event_time"])
+    assert isinstance(coerced["event_date"], date)
+    # nullable text -> "" (ClickHouse String is non-nullable)
+    assert coerced["prompt_text"] == ""
+    print("OK: ClickHouse coerces string dates/datetimes to objects, NULL text to ''")
+
+
 def test_every_writer_is_a_context_manager():
     """get_writer(b) must return an object usable in `with ...` (Writer subclass).
 
@@ -156,5 +190,6 @@ if __name__ == "__main__":
     test_by_user_analytic_tuple_matches_columns()
     test_prompt_log_tuple_matches_columns()
     test_generated_sql_covers_every_column()
+    test_clickhouse_coerces_string_dates_to_objects()
     test_every_writer_is_a_context_manager()
     print("\nAll dataset-contract checks passed.")

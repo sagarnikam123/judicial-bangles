@@ -9,6 +9,7 @@ ClickHouse tradeoff. Upgrade path: FINAL in Grafana queries, already keyed for i
 """
 
 import logging
+from datetime import date, datetime
 
 from conf.config import (
     CLICKHOUSE_DB,
@@ -31,6 +32,14 @@ class ClickHouseWriter(Writer):
     def _connect(self):
         if self.client is None:
             import clickhouse_connect  # lazy import
+            # Create the target DB first via a connection NOT bound to it — you
+            # can't connect to a database to create that same database.
+            bootstrap = clickhouse_connect.get_client(
+                host=CLICKHOUSE_HOST, port=CLICKHOUSE_PORT,
+                username=CLICKHOUSE_USER, password=CLICKHOUSE_PASSWORD,
+            )
+            bootstrap.command(f"CREATE DATABASE IF NOT EXISTS {CLICKHOUSE_DB}")
+            bootstrap.close()
             self.client = clickhouse_connect.get_client(
                 host=CLICKHOUSE_HOST, port=CLICKHOUSE_PORT,
                 username=CLICKHOUSE_USER, password=CLICKHOUSE_PASSWORD,
@@ -51,16 +60,24 @@ class ClickHouseWriter(Writer):
         )
 
     def init_schema(self, ds: Dataset) -> None:
-        client = self._connect()
-        client.command(f"CREATE DATABASE IF NOT EXISTS {CLICKHOUSE_DB}")
+        client = self._connect()   # ensures the database exists
         client.command(self._ddl(ds))
         self._schema_ready.add(ds.name)
 
     def _coerce(self, ds: Dataset, row: tuple) -> list:
-        """ClickHouse String columns reject NULL; nullable text/varchar -> ''."""
+        """Coerce parser values to what the ClickHouse driver expects.
+
+        Parsers emit dates/datetimes as strings (fine for MySQL/Postgres), but
+        the ClickHouse client needs real date/datetime objects for Date/DateTime
+        columns. String columns also reject NULL, so nullable text/varchar -> ''.
+        """
         out = []
         for col, val in zip(ds.columns, row):
-            if val is None:
+            if col == ds.date_col:
+                val = self._to_date(val)
+            elif col in ds.datetime_cols:
+                val = self._to_datetime(val)
+            elif val is None:
                 if col in ds.text_cols or clickhouse_column_type(ds, col).startswith("String"):
                     val = ""
                 elif col in ds.int_cols or col in ds.bool_cols:
@@ -71,6 +88,28 @@ class ClickHouseWriter(Writer):
                 val = int(bool(val))
             out.append(val)
         return out
+
+    @staticmethod
+    def _to_date(val):
+        if val is None or val == "":
+            return date(1970, 1, 1)   # ClickHouse Date is non-nullable; epoch = "unknown"
+        if isinstance(val, date) and not isinstance(val, datetime):
+            return val
+        return datetime.strptime(str(val)[:10], "%Y-%m-%d").date()
+
+    @staticmethod
+    def _to_datetime(val):
+        if val is None or val == "":
+            return datetime(1970, 1, 1)
+        if isinstance(val, datetime):
+            return val
+        s = str(val)
+        for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(s, fmt)
+            except ValueError:
+                continue
+        return datetime(1970, 1, 1)
 
     def write(self, ds: Dataset, rows: list[tuple]) -> int:
         if not rows:
