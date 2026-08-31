@@ -1,60 +1,55 @@
-"""OpenSearch / Elasticsearch prompt-log writer.
+"""OpenSearch / Elasticsearch writer — one index per dataset.
 
-Both engines speak the same wire API for our needs, and opensearch-py works
-against Elasticsearch too, so one writer covers `--backend opensearch` and
-`--backend elasticsearch`.
+opensearch-py works against Elasticsearch too, so one writer covers both
+`--backend opensearch` and `--backend elasticsearch`.
 
-Idempotency: each doc's _id = "<aws_account_id>:<request_id>", so re-ingesting
-the same record overwrites rather than duplicates (same guarantee as SQL upsert).
+Index mapping is generated from the Dataset field lists (numeric/date/keyword/
+text) so aggregations and full-text search behave correctly. Idempotency: each
+doc's _id is the join of the dataset's unique_key values, so re-ingesting a
+record overwrites rather than duplicates (same guarantee as a SQL upsert).
 
-Text fields are ALWAYS indexed here — full-text search on prompt/response is the
-whole reason to pick this backend, so --store-text is implied.
+Index name: OPENSEARCH_INDEX_PREFIX + dataset name (e.g. "kiro-kiro_prompt_log").
 """
 
 import logging
 
 from conf.config import (
     OPENSEARCH_HOST,
-    OPENSEARCH_INDEX,
+    OPENSEARCH_INDEX_PREFIX,
     OPENSEARCH_PASSWORD,
     OPENSEARCH_USER,
     OPENSEARCH_VERIFY_CERTS,
 )
-from writers.base import PROMPT_LOG_COLUMNS, PromptLogWriter
+from writers.base import Dataset
 
 logger = logging.getLogger(__name__)
 
-# Explicit mapping so numeric/date/keyword/text fields aggregate and search correctly.
-INDEX_MAPPING = {
-    "mappings": {
-        "properties": {
-            "aws_account_id": {"type": "keyword"},
-            "account_label": {"type": "keyword"},
-            "request_id": {"type": "keyword"},
-            "user_id": {"type": "keyword"},
-            "user_id_normalized": {"type": "keyword"},
-            "event_time": {"type": "date", "format": "yyyy-MM-dd HH:mm:ss.SSS||strict_date_optional_time"},
-            "event_date": {"type": "date", "format": "yyyy-MM-dd"},
-            "model_id": {"type": "keyword"},
-            "chat_trigger_type": {"type": "keyword"},
-            "prompt_length": {"type": "integer"},
-            "user_message_length": {"type": "integer"},
-            "response_length": {"type": "integer"},
-            "has_code_in_response": {"type": "boolean"},
-            "code_reference_count": {"type": "integer"},
-            "prompt_text": {"type": "text"},
-            "response_text": {"type": "text"},
-            "source_file": {"type": "keyword"},
-        }
-    }
-}
+
+def _field_type(ds: Dataset, col: str) -> dict:
+    if col in ds.text_cols:
+        return {"type": "text"}
+    if col in ds.bool_cols:
+        return {"type": "boolean"}
+    if col in ds.int_cols:
+        return {"type": "integer"}
+    if col in ds.float_cols:
+        return {"type": "double"}
+    if col in ds.datetime_cols:
+        return {"type": "date",
+                "format": "yyyy-MM-dd HH:mm:ss.SSS||strict_date_optional_time"}
+    if col == ds.date_col:
+        return {"type": "date", "format": "yyyy-MM-dd"}
+    return {"type": "keyword"}
 
 
-class SearchPromptWriter(PromptLogWriter):
+class SearchWriter:
     def __init__(self, flavor: str = "opensearch"):
         self.flavor = flavor
         self.client = None
-        self.index = OPENSEARCH_INDEX
+        self._schema_ready = set()
+
+    def _index(self, ds: Dataset) -> str:
+        return f"{OPENSEARCH_INDEX_PREFIX}{ds.name}"
 
     def _connect(self):
         if self.client is None:
@@ -67,31 +62,36 @@ class SearchPromptWriter(PromptLogWriter):
             )
         return self.client
 
-    def init_schema(self) -> None:
+    def init_schema(self, ds: Dataset) -> None:
         client = self._connect()
-        if not client.indices.exists(index=self.index):
-            client.indices.create(index=self.index, body=INDEX_MAPPING)
-            logger.info(f"[{self.flavor}] created index {self.index}")
+        index = self._index(ds)
+        if not client.indices.exists(index=index):
+            mapping = {"mappings": {"properties": {c: _field_type(ds, c) for c in ds.columns}}}
+            client.indices.create(index=index, body=mapping)
+            logger.info(f"[{self.flavor}] created index {index}")
+        self._schema_ready.add(ds.name)
 
-    def _to_doc(self, row: tuple) -> dict:
-        doc = dict(zip(PROMPT_LOG_COLUMNS, row))
-        # Store bool as bool for the boolean mapping; keep everything else as-is.
-        doc["has_code_in_response"] = bool(doc.get("has_code_in_response"))
-        return doc
+    def _doc_id(self, ds: Dataset, doc: dict) -> str:
+        return ":".join(str(doc[k]) for k in ds.unique_key)
 
-    def write(self, rows: list[tuple]) -> int:
+    def write(self, ds: Dataset, rows: list[tuple]) -> int:
         if not rows:
             return 0
+        if ds.name not in self._schema_ready:
+            self.init_schema(ds)
         from opensearchpy.helpers import bulk  # lazy import
 
         client = self._connect()
+        index = self._index(ds)
         actions = []
         for row in rows:
-            doc = self._to_doc(row)
-            _id = f"{doc['aws_account_id']}:{doc['request_id']}"
-            actions.append({"_op_type": "index", "_index": self.index, "_id": _id, "_source": doc})
+            doc = dict(zip(ds.columns, row))
+            for b in ds.bool_cols:
+                doc[b] = bool(doc.get(b))
+            actions.append({"_op_type": "index", "_index": index,
+                            "_id": self._doc_id(ds, doc), "_source": doc})
         success, _ = bulk(client, actions, refresh=False)
-        logger.info(f"[{self.flavor}] indexed {success} prompt-log docs into {self.index}")
+        logger.info(f"[{self.flavor}] indexed {success} docs into {index}")
         return success
 
     def close(self) -> None:

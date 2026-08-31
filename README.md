@@ -207,7 +207,7 @@ Both `main.py` (full pipeline: sync + parse + DB load) and `s3_sync.py` (downloa
 | `--force` | Re-download files for the target date (deletes local copies first) | Off (incremental/idempotent) |
 | `--prompt-logs` | Also download prompt log `.json.gz` files (opt-in, high file count) | Off (only CSVs) |
 | `--store-text` | (main.py only) Store full prompt/response text, not just metadata | Off (text NULL; implied for search backends) |
-| `--backend <name>` | (main.py only) Prompt-log store: `mysql`\|`postgres`\|`opensearch`\|`elasticsearch`\|`clickhouse` | `mysql` (or `PROMPT_LOG_BACKEND` env) |
+| `--backend <name>` | (main.py only) Storage backend for ALL datasets: `mysql`\|`postgres`\|`opensearch`\|`elasticsearch`\|`clickhouse` | `mysql` (or `STORAGE_BACKEND` env) |
 | `--full` | (main.py only) Re-parse ALL local CSVs into DB regardless of sync | Off |
 
 ### Examples
@@ -289,9 +289,9 @@ ls data/222222222222/prompt_logs/ | wc -l         # count downloaded prompt logs
 gunzip -c data/222222222222/prompt_logs/<file>.json.gz | python -m json.tool | less  # read a prompt log
 ```
 
-## Prompt-log storage backends
+## Storage backends
 
-CSV report tables (`kiro_user_report`, `kiro_by_user_analytic`) always live in **MySQL**. **Prompt logs** are backend-selectable — pick whichever store best fits your analysis and has a Grafana datasource:
+Pick **one** backend and all three datasets — `kiro_user_report`, `kiro_by_user_analytic`, and (opt-in) `kiro_prompt_log` — load into it. Choose whichever store fits your analysis and has a Grafana datasource:
 
 | Backend | `--backend` | Best for | Grafana datasource | Extra deps |
 |---|---|---|---|---|
@@ -301,17 +301,17 @@ CSV report tables (`kiro_user_report`, `kiro_by_user_analytic`) always live in *
 | Elasticsearch | `elasticsearch` | Same as OpenSearch (same client lib) | core (built-in) | `requirements-opensearch.txt` |
 | ClickHouse | `clickhouse` | High-volume columnar aggregation (300k+ files) | official plugin | `requirements-clickhouse.txt` |
 
-Install only the backend you use, then set connection details in `conf/.env.kiro` (see `.env.kiro.example` for all vars):
+Set the backend once via `STORAGE_BACKEND` in `conf/.env.kiro`, or per-run with `--backend`. Install only the backend you use (see `.env.kiro.example` for all connection vars):
 
 ```bash
 pip install -r requirements-opensearch.txt      # e.g. for OpenSearch/Elasticsearch
 ```
 
 ```bash
-# Load prompt-log metadata into MySQL (default)
-python main.py --account 222222222222_AdministratorAccess --prompt-logs --date 2026-08-22
+# Load everything (report CSVs) into MySQL (default)
+python main.py --account 222222222222_AdministratorAccess
 
-# Same data into PostgreSQL
+# Everything into PostgreSQL, including prompt logs for one day
 python main.py --account 222222222222_AdministratorAccess --prompt-logs --date 2026-08-22 --backend postgres
 
 # Into OpenSearch/Elasticsearch (full text always indexed — that's the point)
@@ -321,10 +321,14 @@ python main.py --account 222222222222_AdministratorAccess --prompt-logs --date 2
 python main.py --account 222222222222_AdministratorAccess --prompt-logs --date 2026-08-22 --backend clickhouse
 ```
 
+How it maps per backend:
+- **SQL (mysql/postgres/clickhouse):** one table per dataset. DDL + upsert SQL are generated from the dataset's column list in `writers/base.py` (no hand-written per-table SQL).
+- **Search (opensearch/elasticsearch):** one index per dataset, named `<OPENSEARCH_INDEX_PREFIX><dataset>` (e.g. `kiro-kiro_prompt_log`). Field mappings are generated from the same column metadata.
+
 Notes:
-- **Idempotent everywhere.** SQL backends upsert on `(aws_account_id, request_id)`; search backends use a deterministic `_id`; ClickHouse uses `ReplacingMergeTree` keyed on the same pair (dedup is eventual on merge — use `SELECT ... FINAL` in Grafana for the deduped view).
-- **`--store-text`** applies to SQL backends (default off → `*_text` columns NULL). Search backends always index the text.
-- The row shape is defined once in `writers/base.py` (`PROMPT_LOG_COLUMNS`); every backend maps the same tuple, so adding a field is a one-place change. `tests/test_backend_contract.py` guards that the parser tuple, MySQL SQL, and Postgres SQL stay aligned.
+- **Idempotent everywhere.** SQL backends upsert on each dataset's unique key; search backends use a deterministic `_id` (the unique-key values joined); ClickHouse uses `ReplacingMergeTree` keyed on the same columns (dedup is eventual on merge — use `SELECT ... FINAL` in Grafana for the deduped view).
+- **`--store-text`** applies to SQL backends for prompt logs (default off → `*_text` columns NULL). Search backends always index the text.
+- Every dataset's shape is defined once in `writers/base.py` (`Dataset.columns`); all backends map the same tuple, so adding a field is a one-place change. `tests/test_backend_contract.py` guards that each parser tuple, the generated MySQL SQL, and the generated Postgres SQL stay aligned across all three datasets.
 
 ### Cron setup (example)
 

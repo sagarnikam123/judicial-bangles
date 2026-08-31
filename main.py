@@ -3,9 +3,10 @@
 
 Workflow:
   1. Enforce data retention (delete local files older than DATA_RETENTION_DAYS)
-  2. Sync new CSVs from S3 for the selected AWS account (incremental, idempotent)
-  3. Parse CSVs into rows (tagged with aws_account_id / account_label)
-  4. Upsert into MySQL
+  2. Sync new files from S3 for the selected AWS account (incremental, idempotent)
+  3. Parse into rows (tagged with aws_account_id / account_label)
+  4. Load into the selected backend (mysql/postgres/opensearch/elasticsearch/clickhouse)
+     — all three datasets go to the SAME backend chosen via --backend
 
 Run: python main.py [--account PROFILE] [--full] [--force] [--date YYYY-MM-DD]
                     [--prompt-logs] [--store-text] [--backend BACKEND]
@@ -35,15 +36,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from conf.config import PROMPT_LOG_BACKEND, get_account_config, get_account_data_dir
-from db import (
-    get_connection,
-    init_schema,
-    upsert_by_user_analytic_rows,
-    upsert_user_report_rows,
-)
+from conf.config import STORAGE_BACKEND, get_account_config, get_account_data_dir
 from s3_sync import sync_all
-from writers import get_writer
+from writers import BY_USER_ANALYTIC, PROMPT_LOG, USER_REPORT, get_writer
 
 logger = logging.getLogger(__name__)
 
@@ -281,69 +276,66 @@ def parse_prompt_log_file(filepath: Path, account_id: str, account_label: str,
     return rows
 
 
-def load_all_prompt_logs(account_id: str, account_label: str, store_text: bool = False,
-                         backend: str = "mysql") -> int:
-    """Parse and load ALL local prompt_log files for one account into `backend`.
-
-    data/<account_id>/prompt_logs/*.json.gz
-
-    backend: mysql | postgres | opensearch | elasticsearch | clickhouse.
-    Search backends index full text regardless of store_text (that's their point).
-    """
+def _load_prompt_logs(writer, account_id: str, account_label: str,
+                      store_text: bool, is_search: bool) -> int:
+    """Stream prompt_log files through `writer` in bounded batches."""
     prompt_dir = get_account_data_dir(account_id) / "prompt_logs"
     if not prompt_dir.exists():
         return 0
-
     # Search engines exist to search text — always keep it for those backends.
-    if backend in ("opensearch", "elasticsearch", "elastic", "es"):
-        store_text = True
+    store_text = store_text or is_search
 
     total = 0
-    with get_writer(backend) as writer:
-        writer.init_schema()
-        batch = []
-        for f in sorted(prompt_dir.glob("*.json.gz")):
-            batch.extend(parse_prompt_log_file(f, account_id, account_label, store_text))
-            # flush in batches to keep memory bounded on large corpora (300k+ files)
-            if len(batch) >= 1000:
-                total += writer.write(batch)
-                batch = []
-        if batch:
-            total += writer.write(batch)
-
+    batch = []
+    for f in sorted(prompt_dir.glob("*.json.gz")):
+        batch.extend(parse_prompt_log_file(f, account_id, account_label, store_text))
+        # flush in batches to keep memory bounded on large corpora (300k+ files)
+        if len(batch) >= 1000:
+            total += writer.write(PROMPT_LOG, batch)
+            batch = []
+    if batch:
+        total += writer.write(PROMPT_LOG, batch)
     return total
 
 
-def load_all_local_csvs(account_id: str, account_label: str) -> dict:
-    """Parse and upsert ALL local CSVs for one account (full reload mode).
+def load_all(account_id: str, account_label: str, backend: str = "mysql",
+             prompt_logs: bool = False, store_text: bool = False) -> dict:
+    """Parse and load ALL local data for one account into `backend`.
+
+    Loads user_report + by_user_analytic CSVs always; prompt_log only when
+    requested (opt-in — the dev corpus is 300k+ files). One writer, one backend,
+    all three datasets. backend: mysql | postgres | opensearch | elasticsearch | clickhouse.
 
     Flat layout (Option D), per-account:
       data/<account_id>/user_report/*.csv
       data/<account_id>/by_user_analytic/*.csv
+      data/<account_id>/prompt_logs/*.json.gz
     """
     account_data_dir = get_account_data_dir(account_id)
-    user_report_dir = account_data_dir / "user_report"
-    analytic_dir = account_data_dir / "by_user_analytic"
+    is_search = backend in ("opensearch", "elasticsearch", "elastic", "es")
+    result = {"backend": backend, "user_report_rows": 0, "by_user_analytic_rows": 0}
 
-    conn = get_connection()
-    try:
-        total_ur = 0
-        if user_report_dir.exists():
-            for f in sorted(user_report_dir.glob("*.csv")):
+    with get_writer(backend) as writer:
+        # user_report
+        ur_dir = account_data_dir / "user_report"
+        if ur_dir.exists():
+            for f in sorted(ur_dir.glob("*.csv")):
                 rows = parse_user_report_csv(f, account_id, account_label)
-                upsert_user_report_rows(rows, conn=conn)
-                total_ur += len(rows)
+                result["user_report_rows"] += writer.write(USER_REPORT, rows)
 
-        total_an = 0
-        if analytic_dir.exists():
-            for f in sorted(analytic_dir.glob("*.csv")):
+        # by_user_analytic
+        an_dir = account_data_dir / "by_user_analytic"
+        if an_dir.exists():
+            for f in sorted(an_dir.glob("*.csv")):
                 rows = parse_by_user_analytic_csv(f, account_id, account_label)
-                upsert_by_user_analytic_rows(rows, conn=conn)
-                total_an += len(rows)
-    finally:
-        conn.close()
+                result["by_user_analytic_rows"] += writer.write(BY_USER_ANALYTIC, rows)
 
-    return {"user_report_rows": total_ur, "by_user_analytic_rows": total_an}
+        # prompt_log (opt-in)
+        if prompt_logs:
+            result["prompt_log_rows"] = _load_prompt_logs(
+                writer, account_id, account_label, store_text, is_search)
+
+    return result
 
 
 def run(account: str | None = None, full_reload: bool = False, force: bool = False,
@@ -351,25 +343,17 @@ def run(account: str | None = None, full_reload: bool = False, force: bool = Fal
         backend: str = "mysql"):
     """Main entry point for a single AWS account."""
     cfg = get_account_config(account)
-    logger.info(f"=== Kiro Usage Analytics Sync: {cfg['label']} ({cfg['account_id']}) ===")
-
-    # CSV report tables always live in MySQL; only prompt logs are backend-selectable.
-    init_schema()
+    logger.info(f"=== Kiro Usage Analytics Sync: {cfg['label']} ({cfg['account_id']}) "
+                f"[backend={backend}] ===")
 
     sync_result = sync_all(profile=cfg["profile"], force=force, target_date=target_date, prompt_logs=prompt_logs)
     logger.info(f"S3 sync: {sync_result}")
 
     # ponytail: always reload all local CSVs for this account (small file counts,
-    # simplest correct option for daily cron); --full is kept as an explicit alias
-    load_result = load_all_local_csvs(cfg["account_id"], cfg["label"])
-
-    # Load prompt log metadata only when prompt logs were requested (opt-in — the
-    # dev corpus is 300k+ files, so we don't scan it on every ordinary sync).
-    if prompt_logs:
-        prompt_rows = load_all_prompt_logs(cfg["account_id"], cfg["label"],
-                                           store_text=store_text, backend=backend)
-        load_result["prompt_log_rows"] = prompt_rows
-        load_result["prompt_log_backend"] = backend
+    # simplest correct option for daily cron); --full is kept as an explicit alias.
+    # Schemas are created lazily by the writer on first write per dataset.
+    load_result = load_all(cfg["account_id"], cfg["label"], backend=backend,
+                           prompt_logs=prompt_logs, store_text=store_text)
 
     logger.info(f"DB load: {load_result}")
     logger.info("=== Done ===")
@@ -382,7 +366,7 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    parser = argparse.ArgumentParser(description="Kiro Usage Analytics - S3 to MySQL sync")
+    parser = argparse.ArgumentParser(description="Kiro Usage Analytics - S3 to (MySQL/Postgres/OpenSearch/Elasticsearch/ClickHouse) sync")
     parser.add_argument("--account", type=str, default=None,
                         help="AWS profile name to sync (see conf/config.py ACCOUNTS). Defaults to DEFAULT_AWS_PROFILE.")
     parser.add_argument("--full", action="store_true", help="Full reload all local CSVs into DB for this account")
@@ -393,10 +377,10 @@ if __name__ == "__main__":
                         help="Also download prompt logs (.json.gz) AND load their metadata into kiro_prompt_log. Use with --date to limit scope.")
     parser.add_argument("--store-text", action="store_true",
                         help="Store full prompt/response text in the DB (default: metadata only, text stays NULL and is read from files).")
-    parser.add_argument("--backend", type=str, default=PROMPT_LOG_BACKEND,
+    parser.add_argument("--backend", type=str, default=STORAGE_BACKEND,
                         choices=["mysql", "postgres", "opensearch", "elasticsearch", "clickhouse"],
-                        help="Storage backend for prompt logs (default: PROMPT_LOG_BACKEND env or mysql). "
-                             "CSV report tables always use MySQL.")
+                        help="Storage backend for ALL datasets (default: STORAGE_BACKEND env or mysql). "
+                             "user_report + by_user_analytic load always; prompt_log with --prompt-logs.")
     args = parser.parse_args()
 
     result = run(account=args.account, full_reload=args.full, force=args.force,

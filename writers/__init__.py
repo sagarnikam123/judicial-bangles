@@ -1,19 +1,31 @@
-"""Pluggable prompt-log storage backends.
+"""Pluggable storage backends for all Kiro datasets.
 
-parse_prompt_log_file() (in main.py) produces uniform row tuples. Each writer
-here accepts those tuples and persists them to one backend. Select at runtime
-with --backend / PROMPT_LOG_BACKEND.
+The parsers in main.py produce uniform row tuples for three datasets
+(user_report, by_user_analytic, prompt_log). Each writer here persists any of
+them to one backend. Select at runtime with --backend / STORAGE_BACKEND.
 
-    mysql        -> MySQLPromptWriter       (default, reuses db.py)
-    postgres     -> PostgresPromptWriter
-    opensearch   -> SearchPromptWriter      (opensearch-py)
-    elasticsearch-> SearchPromptWriter      (same client, ES-compatible)
-    clickhouse   -> ClickHousePromptWriter
+    mysql        -> MySQLWriter
+    postgres     -> PostgresWriter
+    opensearch   -> SearchWriter      (opensearch-py)
+    elasticsearch-> SearchWriter      (same client, ES-compatible)
+    clickhouse   -> ClickHouseWriter
 
 Backend client libraries are imported lazily inside each writer, so using MySQL
 never requires opensearch-py / psycopg2 / clickhouse-connect to be installed.
 """
 
-from writers.base import PROMPT_LOG_COLUMNS, PromptLogWriter, get_writer
+from writers.base import (
+    BY_USER_ANALYTIC,
+    DATASETS,
+    PROMPT_LOG,
+    PROMPT_LOG_COLUMNS,
+    USER_REPORT,
+    Dataset,
+    Writer,
+    get_writer,
+)
 
-__all__ = ["PROMPT_LOG_COLUMNS", "PromptLogWriter", "get_writer"]
+__all__ = [
+    "Dataset", "Writer", "get_writer", "DATASETS",
+    "USER_REPORT", "BY_USER_ANALYTIC", "PROMPT_LOG", "PROMPT_LOG_COLUMNS",
+]

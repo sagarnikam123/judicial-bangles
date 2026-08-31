@@ -50,10 +50,13 @@ DB_PORT = int(os.getenv("TEST_DEVOPS_DB_PORT", "3306"))
 DB_USER = os.getenv("TEST_DEVOPS_DB_USER")
 DB_PASSWORD = os.getenv("TEST_DEVOPS_DB_PASSWORD")
 
-# -- Prompt-log storage backend --
-# Which store to load prompt logs into: mysql | postgres | opensearch | elasticsearch | clickhouse
-# (CSV report tables always go to MySQL — only prompt logs are backend-selectable.)
-PROMPT_LOG_BACKEND = os.getenv("PROMPT_LOG_BACKEND", "mysql")
+# -- Storage backend --
+# Which store to load ALL datasets into (user_report, by_user_analytic, prompt_log):
+#   mysql | postgres | opensearch | elasticsearch | clickhouse
+# Override per-run with --backend.
+STORAGE_BACKEND = os.getenv("STORAGE_BACKEND", os.getenv("PROMPT_LOG_BACKEND", "mysql"))
+# Backwards-compat alias for older references.
+PROMPT_LOG_BACKEND = STORAGE_BACKEND
 
 # PostgreSQL
 PG_HOST = os.getenv("PG_HOST", "localhost")
@@ -66,7 +69,8 @@ PG_PASSWORD = os.getenv("PG_PASSWORD", "")
 OPENSEARCH_HOST = os.getenv("OPENSEARCH_HOST", "https://localhost:9200")
 OPENSEARCH_USER = os.getenv("OPENSEARCH_USER", "admin")
 OPENSEARCH_PASSWORD = os.getenv("OPENSEARCH_PASSWORD", "")
-OPENSEARCH_INDEX = os.getenv("OPENSEARCH_INDEX", "kiro-prompt-log")
+# One index per dataset: <prefix><dataset_name>, e.g. "kiro-kiro_prompt_log".
+OPENSEARCH_INDEX_PREFIX = os.getenv("OPENSEARCH_INDEX_PREFIX", "kiro-")
 OPENSEARCH_VERIFY_CERTS = os.getenv("OPENSEARCH_VERIFY_CERTS", "false").lower() == "true"
 
 # ClickHouse
