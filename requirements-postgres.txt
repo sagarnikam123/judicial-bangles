@@ -1,0 +1,2 @@
+# PostgreSQL prompt-log backend (--backend postgres)
+psycopg2-binary>=2.9

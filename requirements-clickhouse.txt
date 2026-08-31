@@ -1,0 +1,2 @@
+# ClickHouse prompt-log backend (--backend clickhouse)
+clickhouse-connect>=0.7

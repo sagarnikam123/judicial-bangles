@@ -1,0 +1,3 @@
+# OpenSearch / Elasticsearch prompt-log backend (--backend opensearch | elasticsearch)
+# opensearch-py speaks both OpenSearch and Elasticsearch wire APIs.
+opensearch-py>=2.4

@@ -8,19 +8,22 @@ Workflow:
   4. Upsert into MySQL
 
 Run: python main.py [--account PROFILE] [--full] [--force] [--date YYYY-MM-DD]
-                    [--prompt-logs] [--store-text]
+                    [--prompt-logs] [--store-text] [--backend BACKEND]
   --account      AWS profile name (see conf/accounts.json). Defaults to DEFAULT_AWS_PROFILE.
   --full         Re-parse ALL local CSVs into DB for this account
   --force        Reset sync state and re-download files (today, or --date if given)
   --date         Target date to re-download (YYYY-MM-DD), used with --force
-  --prompt-logs  Download prompt logs AND load their metadata into kiro_prompt_log
-  --store-text   Store full prompt/response text in the DB (default: metadata only)
+  --prompt-logs  Download prompt logs AND load their metadata into the selected backend
+  --store-text   Store full prompt/response text (default: metadata only; implied for search backends)
+  --backend      Prompt-log store: mysql|postgres|opensearch|elasticsearch|clickhouse (default mysql)
 
 Examples:
   python main.py --account 111111111111_AdministratorAccess
   python main.py --account 222222222222_AdministratorAccess --force --date 2026-08-20
   python main.py --account 222222222222_AdministratorAccess --prompt-logs --date 2026-08-22
   python main.py --account 222222222222_AdministratorAccess --prompt-logs --store-text --date 2026-08-22
+  python main.py --account 222222222222_AdministratorAccess --prompt-logs --date 2026-08-22 --backend opensearch
+  python main.py --account 222222222222_AdministratorAccess --prompt-logs --date 2026-08-22 --backend clickhouse
 """
 
 import argparse
@@ -32,15 +35,15 @@ from pathlib import Path
 
 import pandas as pd
 
-from conf.config import get_account_config, get_account_data_dir
+from conf.config import PROMPT_LOG_BACKEND, get_account_config, get_account_data_dir
 from db import (
     get_connection,
     init_schema,
     upsert_by_user_analytic_rows,
-    upsert_prompt_log_rows,
     upsert_user_report_rows,
 )
 from s3_sync import sync_all
+from writers import get_writer
 
 logger = logging.getLogger(__name__)
 
@@ -278,31 +281,35 @@ def parse_prompt_log_file(filepath: Path, account_id: str, account_label: str,
     return rows
 
 
-def load_all_prompt_logs(account_id: str, account_label: str, store_text: bool = False) -> int:
-    """Parse and upsert ALL local prompt_log files for one account.
+def load_all_prompt_logs(account_id: str, account_label: str, store_text: bool = False,
+                         backend: str = "mysql") -> int:
+    """Parse and load ALL local prompt_log files for one account into `backend`.
 
     data/<account_id>/prompt_logs/*.json.gz
+
+    backend: mysql | postgres | opensearch | elasticsearch | clickhouse.
+    Search backends index full text regardless of store_text (that's their point).
     """
     prompt_dir = get_account_data_dir(account_id) / "prompt_logs"
     if not prompt_dir.exists():
         return 0
 
-    conn = get_connection()
+    # Search engines exist to search text — always keep it for those backends.
+    if backend in ("opensearch", "elasticsearch", "elastic", "es"):
+        store_text = True
+
     total = 0
-    try:
+    with get_writer(backend) as writer:
+        writer.init_schema()
         batch = []
         for f in sorted(prompt_dir.glob("*.json.gz")):
             batch.extend(parse_prompt_log_file(f, account_id, account_label, store_text))
             # flush in batches to keep memory bounded on large corpora (300k+ files)
             if len(batch) >= 1000:
-                upsert_prompt_log_rows(batch, conn=conn)
-                total += len(batch)
+                total += writer.write(batch)
                 batch = []
         if batch:
-            upsert_prompt_log_rows(batch, conn=conn)
-            total += len(batch)
-    finally:
-        conn.close()
+            total += writer.write(batch)
 
     return total
 
@@ -340,11 +347,13 @@ def load_all_local_csvs(account_id: str, account_label: str) -> dict:
 
 
 def run(account: str | None = None, full_reload: bool = False, force: bool = False,
-        target_date: str | None = None, prompt_logs: bool = False, store_text: bool = False):
+        target_date: str | None = None, prompt_logs: bool = False, store_text: bool = False,
+        backend: str = "mysql"):
     """Main entry point for a single AWS account."""
     cfg = get_account_config(account)
     logger.info(f"=== Kiro Usage Analytics Sync: {cfg['label']} ({cfg['account_id']}) ===")
 
+    # CSV report tables always live in MySQL; only prompt logs are backend-selectable.
     init_schema()
 
     sync_result = sync_all(profile=cfg["profile"], force=force, target_date=target_date, prompt_logs=prompt_logs)
@@ -357,8 +366,10 @@ def run(account: str | None = None, full_reload: bool = False, force: bool = Fal
     # Load prompt log metadata only when prompt logs were requested (opt-in — the
     # dev corpus is 300k+ files, so we don't scan it on every ordinary sync).
     if prompt_logs:
-        prompt_rows = load_all_prompt_logs(cfg["account_id"], cfg["label"], store_text=store_text)
+        prompt_rows = load_all_prompt_logs(cfg["account_id"], cfg["label"],
+                                           store_text=store_text, backend=backend)
         load_result["prompt_log_rows"] = prompt_rows
+        load_result["prompt_log_backend"] = backend
 
     logger.info(f"DB load: {load_result}")
     logger.info("=== Done ===")
@@ -382,8 +393,13 @@ if __name__ == "__main__":
                         help="Also download prompt logs (.json.gz) AND load their metadata into kiro_prompt_log. Use with --date to limit scope.")
     parser.add_argument("--store-text", action="store_true",
                         help="Store full prompt/response text in the DB (default: metadata only, text stays NULL and is read from files).")
+    parser.add_argument("--backend", type=str, default=PROMPT_LOG_BACKEND,
+                        choices=["mysql", "postgres", "opensearch", "elasticsearch", "clickhouse"],
+                        help="Storage backend for prompt logs (default: PROMPT_LOG_BACKEND env or mysql). "
+                             "CSV report tables always use MySQL.")
     args = parser.parse_args()
 
     result = run(account=args.account, full_reload=args.full, force=args.force,
-                 target_date=args.date, prompt_logs=args.prompt_logs, store_text=args.store_text)
+                 target_date=args.date, prompt_logs=args.prompt_logs, store_text=args.store_text,
+                 backend=args.backend)
     print(f"\nResult: {result}")

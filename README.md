@@ -206,6 +206,8 @@ Both `main.py` (full pipeline: sync + parse + DB load) and `s3_sync.py` (downloa
 | `--date <YYYY-MM-DD>` | Target a specific date (only syncs files for that day) | None (syncs all new files) |
 | `--force` | Re-download files for the target date (deletes local copies first) | Off (incremental/idempotent) |
 | `--prompt-logs` | Also download prompt log `.json.gz` files (opt-in, high file count) | Off (only CSVs) |
+| `--store-text` | (main.py only) Store full prompt/response text, not just metadata | Off (text NULL; implied for search backends) |
+| `--backend <name>` | (main.py only) Prompt-log store: `mysql`\|`postgres`\|`opensearch`\|`elasticsearch`\|`clickhouse` | `mysql` (or `PROMPT_LOG_BACKEND` env) |
 | `--full` | (main.py only) Re-parse ALL local CSVs into DB regardless of sync | Off |
 
 ### Examples
@@ -286,6 +288,43 @@ ls data/222222222222/user_report/ | wc -l         # count user_report CSVs
 ls data/222222222222/prompt_logs/ | wc -l         # count downloaded prompt logs
 gunzip -c data/222222222222/prompt_logs/<file>.json.gz | python -m json.tool | less  # read a prompt log
 ```
+
+## Prompt-log storage backends
+
+CSV report tables (`kiro_user_report`, `kiro_by_user_analytic`) always live in **MySQL**. **Prompt logs** are backend-selectable — pick whichever store best fits your analysis and has a Grafana datasource:
+
+| Backend | `--backend` | Best for | Grafana datasource | Extra deps |
+|---|---|---|---|---|
+| MySQL | `mysql` (default) | Relational metadata, per-user/model aggregation | core (built-in) | none |
+| PostgreSQL | `postgres` | Same as MySQL; JSONB-friendly ecosystem | core (built-in) | `requirements-postgres.txt` |
+| OpenSearch | `opensearch` | **Full-text search** on prompt/response, log explorer | official plugin | `requirements-opensearch.txt` |
+| Elasticsearch | `elasticsearch` | Same as OpenSearch (same client lib) | core (built-in) | `requirements-opensearch.txt` |
+| ClickHouse | `clickhouse` | High-volume columnar aggregation (300k+ files) | official plugin | `requirements-clickhouse.txt` |
+
+Install only the backend you use, then set connection details in `conf/.env.kiro` (see `.env.kiro.example` for all vars):
+
+```bash
+pip install -r requirements-opensearch.txt      # e.g. for OpenSearch/Elasticsearch
+```
+
+```bash
+# Load prompt-log metadata into MySQL (default)
+python main.py --account 222222222222_AdministratorAccess --prompt-logs --date 2026-08-22
+
+# Same data into PostgreSQL
+python main.py --account 222222222222_AdministratorAccess --prompt-logs --date 2026-08-22 --backend postgres
+
+# Into OpenSearch/Elasticsearch (full text always indexed — that's the point)
+python main.py --account 222222222222_AdministratorAccess --prompt-logs --date 2026-08-22 --backend opensearch
+
+# Into ClickHouse (columnar, great for large corpora)
+python main.py --account 222222222222_AdministratorAccess --prompt-logs --date 2026-08-22 --backend clickhouse
+```
+
+Notes:
+- **Idempotent everywhere.** SQL backends upsert on `(aws_account_id, request_id)`; search backends use a deterministic `_id`; ClickHouse uses `ReplacingMergeTree` keyed on the same pair (dedup is eventual on merge — use `SELECT ... FINAL` in Grafana for the deduped view).
+- **`--store-text`** applies to SQL backends (default off → `*_text` columns NULL). Search backends always index the text.
+- The row shape is defined once in `writers/base.py` (`PROMPT_LOG_COLUMNS`); every backend maps the same tuple, so adding a field is a one-place change. `tests/test_backend_contract.py` guards that the parser tuple, MySQL SQL, and Postgres SQL stay aligned.
 
 ### Cron setup (example)
 
