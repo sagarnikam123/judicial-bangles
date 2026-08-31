@@ -3,13 +3,13 @@
 import logging
 
 from conf.config import PG_DB, PG_HOST, PG_PASSWORD, PG_PORT, PG_USER
-from writers.base import Dataset
+from writers.base import Dataset, Writer
 from writers.sqlgen import postgres_column_type, upsert_sql_postgres
 
 logger = logging.getLogger(__name__)
 
 
-class PostgresWriter:
+class PostgresWriter(Writer):
     def __init__(self):
         self.conn = None
         self._schema_ready = set()

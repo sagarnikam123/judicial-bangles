@@ -17,13 +17,13 @@ from conf.config import (
     CLICKHOUSE_PORT,
     CLICKHOUSE_USER,
 )
-from writers.base import Dataset
+from writers.base import Dataset, Writer
 from writers.sqlgen import clickhouse_column_type
 
 logger = logging.getLogger(__name__)
 
 
-class ClickHouseWriter:
+class ClickHouseWriter(Writer):
     def __init__(self):
         self.client = None
         self._schema_ready = set()

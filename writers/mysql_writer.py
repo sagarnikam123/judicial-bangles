@@ -7,13 +7,13 @@ Dataset field lists so the schema can never drift from the row tuple.
 import logging
 
 from conf.config import DB_HOST, DB_NAME, DB_PASSWORD, DB_PORT, DB_USER
-from writers.base import Dataset
+from writers.base import Dataset, Writer
 from writers.sqlgen import mysql_column_type, upsert_sql_mysql
 
 logger = logging.getLogger(__name__)
 
 
-class MySQLWriter:
+class MySQLWriter(Writer):
     def __init__(self):
         self.conn = None
         self._schema_ready = set()

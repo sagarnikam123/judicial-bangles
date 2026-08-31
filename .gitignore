@@ -60,4 +60,6 @@ __pycache__/
 
 # Secrets & org-specific config (use the .example files as templates)
 conf/.env.kiro
+conf/.env.kiro.*
+!conf/.env.kiro.example
 conf/accounts.json

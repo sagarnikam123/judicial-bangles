@@ -136,9 +136,25 @@ def test_generated_sql_covers_every_column():
         print(f"OK: generated SQL covers all {n} columns for {ds.name}")
 
 
+def test_every_writer_is_a_context_manager():
+    """get_writer(b) must return an object usable in `with ...` (Writer subclass).
+
+    Regression guard: main.load_all() does `with get_writer(backend) as w`, so a
+    writer missing __enter__/__exit__ (e.g. not subclassing Writer) breaks every
+    load. Construction is offline (clients are lazy), so this needs no live server.
+    """
+    from writers.base import Writer, get_writer
+    for b in ("mysql", "postgres", "opensearch", "elasticsearch", "clickhouse"):
+        w = get_writer(b)
+        assert isinstance(w, Writer), f"{b} writer must subclass Writer"
+        assert hasattr(w, "__enter__") and hasattr(w, "__exit__"), f"{b} not a context manager"
+    print("OK: all 5 writers are Writer-subclass context managers")
+
+
 if __name__ == "__main__":
     test_user_report_tuple_matches_columns()
     test_by_user_analytic_tuple_matches_columns()
     test_prompt_log_tuple_matches_columns()
     test_generated_sql_covers_every_column()
+    test_every_writer_is_a_context_manager()
     print("\nAll dataset-contract checks passed.")

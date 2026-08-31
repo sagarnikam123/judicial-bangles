@@ -20,7 +20,7 @@ from conf.config import (
     OPENSEARCH_USER,
     OPENSEARCH_VERIFY_CERTS,
 )
-from writers.base import Dataset
+from writers.base import Dataset, Writer
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ def _field_type(ds: Dataset, col: str) -> dict:
     return {"type": "keyword"}
 
 
-class SearchWriter:
+class SearchWriter(Writer):
     def __init__(self, flavor: str = "opensearch"):
         self.flavor = flavor
         self.client = None
