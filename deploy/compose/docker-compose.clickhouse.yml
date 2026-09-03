@@ -1,0 +1,24 @@
+# ClickHouse — Local Standalone Container for Judicial Bangles
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.5
+    container_name: kiro-clickhouse
+    restart: unless-stopped
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      CLICKHOUSE_DB: kiro
+      CLICKHOUSE_USER: root
+      CLICKHOUSE_PASSWORD: root#123
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - kiro-clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  kiro-clickhouse-data:

@@ -1,0 +1,25 @@
+# MySQL 8.4 — Local Standalone Container for Judicial Bangles
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: kiro-mysql
+    restart: unless-stopped
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root#123
+      MYSQL_DATABASE: kiro
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - kiro-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot#123"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  kiro-mysql-data:

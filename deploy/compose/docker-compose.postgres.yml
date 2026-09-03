@@ -1,0 +1,22 @@
+# PostgreSQL 17 — Local Standalone Container for Judicial Bangles
+services:
+  postgres:
+    image: postgres:17
+    container_name: kiro-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: root#123
+      POSTGRES_DB: kiro
+    volumes:
+      - kiro-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U root -d kiro"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  kiro-postgres-data:

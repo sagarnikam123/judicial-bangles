@@ -2,7 +2,7 @@
 
 > All commands are run from the repo root in **PowerShell**: `C:\path\to\judicial-bangles`
 
-This project syncs Kiro usage reports from S3 into MySQL, then Grafana reads MySQL for dashboards. There's no server to run — just a Python script invoked by Task Scheduler (the Windows equivalent of cron). Grafana can be an existing instance pointed at your MySQL.
+This project syncs Kiro usage reports from S3 into your chosen storage backend (MySQL, PostgreSQL, ClickHouse, OpenSearch, or Elasticsearch), then Grafana reads from the backend for dashboards. There's no server to run — just a Python script invoked by Task Scheduler (the Windows equivalent of cron). Grafana can be an existing instance pointed at your backend.
 
 ## Table of Contents
 
@@ -27,7 +27,7 @@ This project syncs Kiro usage reports from S3 into MySQL, then Grafana reads MyS
 
 - Windows 10/11 or Windows Server with PowerShell 5.1+
 - Access to the AWS account(s) where Kiro writes usage reports (via AWS IAM Identity Center / SSO)
-- A reachable MySQL instance (8.x) with a database and write credentials
+- A reachable storage backend — MySQL, PostgreSQL, ClickHouse, OpenSearch, or Elasticsearch (see [Backend Guides](../backends/README.md) or start one via Docker Desktop and [deploy/compose](../compose/))
 - (Optional) A Grafana instance to visualize — local or shared
 
 ---

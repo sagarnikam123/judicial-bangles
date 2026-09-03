@@ -2,7 +2,7 @@
 
 > All commands are run from the repo root: `/path/to/judicial-bangles`
 
-This project syncs Kiro usage reports from S3 into MySQL, then Grafana reads MySQL for dashboards. On Linux it runs as a nightly cron job. No long-running server process.
+This project syncs Kiro usage reports from S3 into your chosen storage backend (MySQL, PostgreSQL, ClickHouse, OpenSearch, or Elasticsearch), then Grafana reads from the backend for dashboards. On Linux it runs as a nightly cron job. No long-running server process.
 
 ## Table of Contents
 
@@ -25,9 +25,9 @@ This project syncs Kiro usage reports from S3 into MySQL, then Grafana reads MyS
 
 ## Prerequisites
 
-- A Linux host (EC2 or on-prem) with network reach to your S3 buckets and MySQL
+- A Linux host (EC2 or on-prem) with network reach to your S3 buckets and backend
 - AWS credentials (SSO profile, EC2 instance role, or access keys)
-- MySQL 8.x with a database and write credentials
+- A reachable storage backend — MySQL, PostgreSQL, ClickHouse, OpenSearch, or Elasticsearch (see [Backend Guides](../backends/README.md) or launch via [deploy/compose](../compose/))
 - (Optional) Grafana instance to visualize
 
 Verify base tools:

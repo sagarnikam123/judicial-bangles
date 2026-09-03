@@ -64,6 +64,18 @@ python3 main.py --account 853268358782_AdministratorAccess
 
 > `download only` = `s3_sync.py`; `download + load` = `main.py`. See [Section 4](#4-load-data-into-a-backend).
 
+### Inspect local downloads
+
+```bash
+# Count downloaded files per report type
+ls data/<account_id>/user_report/ | wc -l
+ls data/<account_id>/by_user_analytic/ | wc -l
+ls data/<account_id>/prompt_logs/ | wc -l
+
+# View raw prompt log content without decompressing on disk
+gunzip -c data/<account_id>/prompt_logs/<file>.json.gz | python3 -m json.tool | head -n 50
+```
+
 ---
 
 ## 2. Start a backend (one at a time)
