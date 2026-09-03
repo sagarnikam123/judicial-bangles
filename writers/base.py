@@ -32,19 +32,41 @@ class Dataset:
 
 
 # ── user_report ──────────────────────────────────────────────────────────────
+_USER_REPORT_MODELS = [
+    "auto_messages",
+    "claude_haiku_4_5_messages",
+    "claude_opus_4_5_messages",
+    "claude_opus_4_6_messages",
+    "claude_opus_4_7_messages",
+    "claude_opus_4_8_messages",
+    "claude_opus_5_messages",
+    "claude_sonnet_4_messages",
+    "claude_sonnet_4_5_messages",
+    "claude_sonnet_4_6_messages",
+    "claude_sonnet_5_messages",
+    "claude_sonnet_4_20250514_v1_0_messages",
+    "deepseek_3_2_messages",
+    "glm_5_messages",
+    "gpt_5_6_luna_messages",
+    "gpt_5_6_sol_messages",
+    "gpt_5_6_terra_messages",
+    "minimax_m2_1_messages",
+    "minimax_m2_5_messages",
+    "qwen3_coder_next_messages",
+]
+
 USER_REPORT = Dataset(
     name="kiro_user_report",
     columns=[
         "aws_account_id", "account_label", "report_date", "user_id", "user_email",
         "client_type", "chat_conversations", "credits_used", "overage_cap",
         "overage_credits_used", "overage_enabled", "profile_id", "subscription_tier",
-        "total_messages", "new_user", "auto_messages",
-        "claude_opus_4_6_messages", "claude_opus_4_8_messages",
+        "total_messages", "new_user",
+        *_USER_REPORT_MODELS,
     ],
     unique_key=["aws_account_id", "report_date", "user_id", "client_type"],
     date_col="report_date",
-    int_cols=["chat_conversations", "total_messages", "auto_messages",
-              "claude_opus_4_6_messages", "claude_opus_4_8_messages"],
+    int_cols=["chat_conversations", "total_messages", *_USER_REPORT_MODELS],
     float_cols=["credits_used", "overage_cap", "overage_credits_used"],
     bool_cols=["overage_enabled", "new_user"],
 )

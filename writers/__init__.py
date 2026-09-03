@@ -15,6 +15,7 @@ never requires opensearch-py / psycopg2 / clickhouse-connect to be installed.
 """
 
 from writers.base import (
+    _USER_REPORT_MODELS,
     BY_USER_ANALYTIC,
     DATASETS,
     PROMPT_LOG,
@@ -28,4 +29,5 @@ from writers.base import (
 __all__ = [
     "Dataset", "Writer", "get_writer", "DATASETS",
     "USER_REPORT", "BY_USER_ANALYTIC", "PROMPT_LOG", "PROMPT_LOG_COLUMNS",
+    "_USER_REPORT_MODELS",
 ]

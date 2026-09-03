@@ -110,7 +110,7 @@ def test_prompt_log_tuple_matches_columns():
         f"prompt_log tuple has {len(rows[0])} fields, columns has {len(PROMPT_LOG.columns)}"
     )
     d2 = dict(zip(PROMPT_LOG.columns, rows[0]))
-    assert d2["user_id_normalized"] == "abc-11112222-3333-4444-5555-666677778888"
+    assert d2["user_id_normalized"] == "11112222-3333-4444-5555-666677778888"
     assert d2["has_code_in_response"] == 1
     print("OK: prompt_log tuple matches columns")
 

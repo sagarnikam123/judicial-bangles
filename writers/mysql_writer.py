@@ -43,6 +43,12 @@ class MySQLWriter(Writer):
         conn = self._connect()
         with conn.cursor() as cur:
             cur.execute(self._ddl(ds))
+            # Auto-migrate any newly introduced columns to existing tables
+            cur.execute(f"SHOW COLUMNS FROM {ds.name};")
+            existing_cols = {row[0].lower() for row in cur.fetchall()}
+            for c in ds.columns:
+                if c.lower() not in existing_cols:
+                    cur.execute(f"ALTER TABLE {ds.name} ADD COLUMN {c} {mysql_column_type(ds, c)};")
         self._schema_ready.add(ds.name)
 
     def write(self, ds: Dataset, rows: list[tuple]) -> int:

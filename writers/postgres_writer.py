@@ -41,6 +41,9 @@ class PostgresWriter(Writer):
         conn = self._connect()
         with conn.cursor() as cur:
             cur.execute(self._ddl(ds))
+            # Auto-migrate any newly introduced columns to existing tables
+            for c in ds.columns:
+                cur.execute(f"ALTER TABLE {ds.name} ADD COLUMN IF NOT EXISTS {c} {postgres_column_type(ds, c)};")
         self._schema_ready.add(ds.name)
 
     def write(self, ds: Dataset, rows: list[tuple]) -> int:
