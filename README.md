@@ -5,7 +5,7 @@
 [![Tested with: pytest](https://img.shields.io/badge/tested%20with-pytest-0A9EDC.svg?logo=pytest&logoColor=white)](https://docs.pytest.org/)
 [![Platform: AWS](https://img.shields.io/badge/platform-AWS%20S3-232F3E.svg?logo=amazon-aws&logoColor=white)](https://aws.amazon.com/)
 [![AWS SDK: boto3](https://img.shields.io/badge/AWS%20SDK-boto3-FF9900.svg?logo=amazon-aws&logoColor=white)](https://boto3.amazonaws.com/v1/documentation/api/latest/index.html)
-[![Telemetry: Amazon Q Developer](https://img.shields.io/badge/telemetry-Amazon%20Q%20Developer-7057ff.svg?logo=amazon-aws&logoColor=white)](https://aws.amazon.com/q/developer/)
+[![Telemetry: Kiro](https://img.shields.io/badge/telemetry-Kiro-7057ff.svg)](#)
 [![Backends: 5 Supported](https://img.shields.io/badge/backends-MySQL%20%7C%20Postgres%20%7C%20ClickHouse%20%7C%20OpenSearch-blue.svg)](#supported-storage-backends)
 [![Dashboards: Grafana](https://img.shields.io/badge/dashboards-Grafana-F46800.svg?logo=grafana&logoColor=white)](dashboard/)
 [![Architecture: Multi-Account](https://img.shields.io/badge/architecture-Multi--Account-success.svg)](#architecture--data-flow)
