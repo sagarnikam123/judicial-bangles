@@ -1,5 +1,16 @@
 # Judicial Bangles
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python: 3.9+](https://img.shields.io/badge/python-3.9+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Tested with: pytest](https://img.shields.io/badge/tested%20with-pytest-0A9EDC.svg?logo=pytest&logoColor=white)](https://docs.pytest.org/)
+[![Platform: AWS](https://img.shields.io/badge/platform-AWS%20S3-232F3E.svg?logo=amazon-aws&logoColor=white)](https://aws.amazon.com/)
+[![AWS SDK: boto3](https://img.shields.io/badge/AWS%20SDK-boto3-FF9900.svg?logo=amazon-aws&logoColor=white)](https://boto3.amazonaws.com/v1/documentation/api/latest/index.html)
+[![Telemetry: Amazon Q Developer](https://img.shields.io/badge/telemetry-Amazon%20Q%20Developer-7057ff.svg?logo=amazon-aws&logoColor=white)](https://aws.amazon.com/q/developer/)
+[![Backends: 5 Supported](https://img.shields.io/badge/backends-MySQL%20%7C%20Postgres%20%7C%20ClickHouse%20%7C%20OpenSearch-blue.svg)](#supported-storage-backends)
+[![Dashboards: Grafana](https://img.shields.io/badge/dashboards-Grafana-F46800.svg?logo=grafana&logoColor=white)](dashboard/)
+[![Architecture: Multi-Account](https://img.shields.io/badge/architecture-Multi--Account-success.svg)](#architecture--data-flow)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/sagarnikam123/judicial-bangles/pulls)
+
 Syncs **Kiro (Amazon Q Developer)** usage reports and prompt logs from Amazon S3 into analytical backends for reporting and Grafana visualization.
 
 The pipeline pulls data across multiple AWS accounts (e.g. `prod` and `dev`), normalizes and tags every record with `aws_account_id` and `account_label`, and streams them into your chosen backend so dashboards can dynamically slice and aggregate by account.
