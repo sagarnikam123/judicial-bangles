@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/python-3.9+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Tested with: pytest](https://img.shields.io/badge/tested%20with-pytest-0A9EDC.svg?logo=pytest&logoColor=white)](https://docs.pytest.org/)
-[![Platform: AWS](https://img.shields.io/badge/platform-AWS%20S3-232F3E.svg?logo=amazon-aws&logoColor=white)](https://aws.amazon.com/)
+[![Platform: AWS](https://img.shields.io/badge/platform-AWS%20S3-FF9900.svg?logo=amazon-aws&logoColor=white)](https://aws.amazon.com/)
 [![AWS SDK: boto3](https://img.shields.io/badge/AWS%20SDK-boto3-FF9900.svg?logo=amazon-aws&logoColor=white)](https://boto3.amazonaws.com/v1/documentation/api/latest/index.html)
 [![Telemetry: Kiro](https://img.shields.io/badge/telemetry-Kiro-7057ff.svg)](#)
 [![Backends: 5 Supported](https://img.shields.io/badge/backends-MySQL%20%7C%20Postgres%20%7C%20ClickHouse%20%7C%20OpenSearch-blue.svg)](#supported-storage-backends)
